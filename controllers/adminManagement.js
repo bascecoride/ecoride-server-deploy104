@@ -380,8 +380,13 @@ export const deleteAdmin = async (req, res) => {
 // Toggle admin active status (super-admin only)
 export const toggleAdminStatus = async (req, res) => {
   try {
+    console.log('🔄 Toggle admin status request received');
+    console.log('👤 Requesting user:', req.user);
+    console.log('🎯 Target admin ID:', req.params.id);
+    
     // Check if user is super-admin
     if (req.user.adminRole !== 'super-admin') {
+      console.log('❌ Access denied - not super-admin');
       return res.status(StatusCodes.FORBIDDEN).json({ 
         message: 'Access denied. Super-admin privileges required.' 
       });
@@ -391,17 +396,21 @@ export const toggleAdminStatus = async (req, res) => {
     
     // Prevent deactivating yourself
     if (req.user.id === id) {
+      console.log('❌ Cannot deactivate own account');
       throw new BadRequestError('You cannot deactivate your own account');
     }
 
     const admin = await Admin.findById(id);
     
     if (!admin) {
+      console.log('❌ Admin not found:', id);
       throw new NotFoundError(`No admin found with id ${id}`);
     }
 
+    console.log('📝 Current admin status:', admin.isActive);
     admin.isActive = !admin.isActive;
     await admin.save();
+    console.log('✅ New admin status:', admin.isActive);
 
     // Log activity
     await logActivity(
@@ -418,12 +427,13 @@ export const toggleAdminStatus = async (req, res) => {
 
     const updatedAdmin = await Admin.findById(id).select('-password');
     
+    console.log('✅ Toggle admin status successful');
     res.status(StatusCodes.OK).json({
       message: `Admin ${admin.isActive ? 'activated' : 'deactivated'} successfully`,
       admin: updatedAdmin
     });
   } catch (error) {
-    console.error(`Error toggling admin status ${req.params.id}:`, error);
+    console.error(`❌ Error toggling admin status ${req.params.id}:`, error);
     
     if (error.name === 'NotFoundError') {
       res.status(StatusCodes.NOT_FOUND).json({ message: error.message });
