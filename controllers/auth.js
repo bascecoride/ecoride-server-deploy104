@@ -121,7 +121,9 @@ export const register = async (req, res) => {
     staffFacultyIdDocument,
     cor,
     driverLicense,
-    vehicleType
+    orCr,
+    vehicleType,
+    agreedToTerms
   } = req.body;
 
   if (!email || !password) {
@@ -130,6 +132,10 @@ export const register = async (req, res) => {
 
   if (!role || !["customer", "rider"].includes(role)) {
     throw new BadRequestError("Valid role is required (customer or rider)");
+  }
+
+  if (!agreedToTerms) {
+    throw new BadRequestError("You must agree to the terms and conditions to register");
   }
 
   try {
@@ -168,15 +174,25 @@ export const register = async (req, res) => {
         if (!schoolIdDocument || !cor) {
           throw new BadRequestError("School ID and COR are required for students");
         }
-        if (role === "rider" && !driverLicense) {
-          throw new BadRequestError("Driver license is required for student drivers");
+        if (role === "rider") {
+          if (!driverLicense) {
+            throw new BadRequestError("Driver license is required for student drivers");
+          }
+          if (!orCr) {
+            throw new BadRequestError("OR/CR (Official Receipt/Certificate of Registration) is required for student drivers");
+          }
         }
       } else if (userRole === "Faculty" || userRole === "Staff") {
         if (!staffFacultyIdDocument) {
           throw new BadRequestError("Staff/Faculty ID is required for faculty and staff");
         }
-        if (role === "rider" && !driverLicense) {
-          throw new BadRequestError("Driver license is required for faculty/staff drivers");
+        if (role === "rider") {
+          if (!driverLicense) {
+            throw new BadRequestError("Driver license is required for faculty/staff drivers");
+          }
+          if (!orCr) {
+            throw new BadRequestError("OR/CR (Official Receipt/Certificate of Registration) is required for faculty/staff drivers");
+          }
         }
       }
     }
@@ -199,9 +215,12 @@ export const register = async (req, res) => {
       staffFacultyIdDocument,
       cor,
       driverLicense,
+      orCr,
       vehicleType,
       approved: false, // Ensure all new users start as unapproved
-      status: "pending"
+      status: "pending",
+      agreedToTerms: true,
+      termsAgreedAt: new Date()
     });
 
     await user.save();
@@ -710,12 +729,12 @@ export const uploadDocuments = async (req, res) => {
     if (userRole === 'Student') {
       requiredDocs.push('schoolIdDocument', 'cor');
       if (role === 'rider') {
-        requiredDocs.push('driverLicense');
+        requiredDocs.push('driverLicense', 'orCr');
       }
     } else if (userRole === 'Faculty' || userRole === 'Staff') {
       requiredDocs.push('staffFacultyIdDocument');
       if (role === 'rider') {
-        requiredDocs.push('driverLicense');
+        requiredDocs.push('driverLicense', 'orCr');
       }
     }
 

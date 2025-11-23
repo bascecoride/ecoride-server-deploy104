@@ -186,6 +186,7 @@ export const updateRideStatus = async (req, res) => {
 
 export const cancelRide = async (req, res) => {
   const { rideId } = req.params;
+  const { reason } = req.body;
   const userId = req.user.id;
 
   if (!rideId) {
@@ -224,6 +225,12 @@ export const cancelRide = async (req, res) => {
     const cancellerName = cancelledBy === "customer" 
       ? `${ride.customer.firstName} ${ride.customer.lastName}` 
       : `${ride.rider?.firstName} ${ride.rider?.lastName}`;
+    
+    // Save cancellation reason
+    if (reason) {
+      ride.cancellationReason = reason;
+      console.log(`📝 Cancellation reason saved: "${reason}" by ${cancelledBy}`);
+    }
 
     // If rider cancelled, add them to blacklist so they never see this ride again
     if (cancelledBy === "rider") {
@@ -243,6 +250,7 @@ export const cancelRide = async (req, res) => {
         // If ride was already accepted (START/ARRIVED), mark as CANCELLED
         ride.status = "CANCELLED";
         ride.cancelledBy = cancelledBy;
+        ride.cancelledByName = cancellerName;
         ride.cancelledAt = new Date();
         console.log(`🚫 Ride ${rideId} marked as CANCELLED by rider ${userId}`);
       }
@@ -250,6 +258,7 @@ export const cancelRide = async (req, res) => {
       // Customer cancelled - mark ride as CANCELLED
       ride.status = "CANCELLED";
       ride.cancelledBy = cancelledBy;
+      ride.cancelledByName = cancellerName;
       ride.cancelledAt = new Date();
       console.log(`🚫 Ride ${rideId} cancelled by customer ${userId}, status updated to CANCELLED`);
     }
@@ -434,7 +443,7 @@ export const createRide = async (req, res) => {
     console.log(`🛣️ Distance calculated: ${distance.toFixed(2)} km`);
     
     // Calculate fare based on vehicle type and distance
-    const fareOptions = calculateFare(distance);
+    const fareOptions = await calculateFare(distance);
     const fare = fareOptions[vehicle];
     console.log(`💰 Fare calculated: ${fare} for ${vehicle}`);
 

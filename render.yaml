@@ -21,7 +21,7 @@ services:
       - key: REFRESH_TOKEN_EXPIRY
         value: 30d
       - key: GOOGLE_MAPS_API_KEY
-        value: AIzaSyAJEayMulsZ_LDps2fKN22Q-ED2f3BwGIw
+        value: AIzaSyAO0FLe4ZAqH36QIrkbhsb2qpHdS-tZVlc
       - key: EMAIL_SERVICE
         value: gmail
       - key: EMAIL_USER

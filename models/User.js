@@ -91,6 +91,10 @@ const userSchema = new Schema(
       type: String,
       required: false,
     },
+    orCr: {
+      type: String,
+      required: false,
+    },
     status: {
       type: String,
       enum: ["pending", "approved", "disapproved"],
@@ -117,6 +121,14 @@ const userSchema = new Schema(
       required: false,
     },
     resetPasswordExpires: {
+      type: Date,
+      required: false,
+    },
+    agreedToTerms: {
+      type: Boolean,
+      default: false,
+    },
+    termsAgreedAt: {
       type: Date,
       required: false,
     }

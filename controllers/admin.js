@@ -246,6 +246,28 @@ export const disapproveUser = async (req, res) => {
       }
     }
     
+    // Emit real-time socket event to notify user of disapproval
+    if (req.io) {
+      try {
+        // Find all sockets for this user and emit disapproval event
+        const sockets = await req.io.fetchSockets();
+        const userSocket = sockets.find(s => s.user?.id === id);
+        
+        if (userSocket) {
+          console.log(`🔔 Emitting accountDisapproved event to user ${id} (socket: ${userSocket.id})`);
+          userSocket.emit('accountDisapproved', {
+            reason: reason || 'Your account has been disapproved by an administrator',
+            timestamp: new Date().toISOString()
+          });
+        } else {
+          console.log(`⚠️ User ${id} is not currently connected via socket`);
+        }
+      } catch (socketError) {
+        console.error(`⚠️ Error emitting disapproval socket event:`, socketError.message);
+        // Don't fail the request if socket emission fails
+      }
+    }
+    
     res.status(StatusCodes.OK).json({
       message: 'User disapproved successfully',
       user: updatedUser

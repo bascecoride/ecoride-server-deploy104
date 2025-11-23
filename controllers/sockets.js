@@ -334,9 +334,12 @@ const handleSocketConnection = (io) => {
             clearInterval(retryInterval);
           });
 
-          socket.on("cancelRide", async () => {
+          socket.on("cancelRide", async (data) => {
             canceled = true;
             clearInterval(retryInterval);
+            
+            // Extract reason from data (can be object with rideId and reason, or just rideId)
+            const reason = typeof data === 'object' ? data.reason : null;
             
             // ✅ FIXED: Update status to CANCELLED instead of deleting, but protect COMPLETED rides
             const cancelRide = await Ride.findById(rideId)
@@ -352,7 +355,15 @@ const handleSocketConnection = (io) => {
                 
                 cancelRide.status = "CANCELLED";
                 cancelRide.cancelledBy = "customer";
+                cancelRide.cancelledByName = cancellerName;
                 cancelRide.cancelledAt = new Date();
+                
+                // Save cancellation reason if provided
+                if (reason) {
+                  cancelRide.cancellationReason = reason;
+                  console.log(`📝 Cancellation reason saved: "${reason}" by customer`);
+                }
+                
                 await cancelRide.save();
                 console.log(`🚫 Customer ${user.id} canceled ride ${rideId} - status updated to CANCELLED (NOT DELETED)`);
                 

@@ -51,8 +51,16 @@ const rideSchema = new Schema(
       enum: ["customer", "rider"],
       default: null,
     },
+    cancelledByName: {
+      type: String,
+      default: null,
+    },
     cancelledAt: {
       type: Date,
+      default: null,
+    },
+    cancellationReason: {
+      type: String,
       default: null,
     },
     blacklistedRiders: {

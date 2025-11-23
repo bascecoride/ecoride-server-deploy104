@@ -553,13 +553,21 @@ export const adminLogin = async (req, res) => {
     });
   } catch (error) {
     console.error('Admin login error:', error);
+    console.error('Error name:', error.name);
+    console.error('Error message:', error.message);
     
-    if (error.name === 'BadRequestError' || error.name === 'UnauthenticatedError') {
-      res.status(StatusCodes.UNAUTHORIZED).json({ message: error.message });
-      return;
+    // Check by statusCode first (more reliable)
+    if (error.statusCode === StatusCodes.BAD_REQUEST || error.statusCode === StatusCodes.UNAUTHORIZED) {
+      return res.status(error.statusCode).json({ message: error.message });
     }
     
-    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ 
+    // Check by error name as fallback
+    if (error.name === 'BadRequestError' || error.name === 'UnauthenticatedError') {
+      return res.status(StatusCodes.UNAUTHORIZED).json({ message: error.message });
+    }
+    
+    // Generic error response
+    return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ 
       message: 'Error during login',
       error: error.message
     });

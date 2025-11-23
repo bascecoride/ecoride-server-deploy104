@@ -29,7 +29,8 @@ router.post('/upload-documents', upload.fields([
   { name: 'schoolIdDocument', maxCount: 1 },
   { name: 'staffFacultyIdDocument', maxCount: 1 },
   { name: 'cor', maxCount: 1 },
-  { name: 'driverLicense', maxCount: 1 }
+  { name: 'driverLicense', maxCount: 1 },
+  { name: 'orCr', maxCount: 1 }
 ]), uploadDocuments); // Upload verification documents
 
 // Special admin login endpoint
