@@ -48,7 +48,7 @@ export const acceptRide = async (req, res) => {
     ride.status = "START";
     await ride.save();
 
-    ride = await ride.populate("rider", "firstName lastName phone vehicleType");
+    ride = await ride.populate("rider", "firstName lastName phone vehicleType photo");
 
     // Broadcast to the specific ride room
     if (req.io) {
@@ -109,7 +109,7 @@ export const updateRideStatus = async (req, res) => {
   }
 
   try {
-    let ride = await Ride.findById(rideId).populate("customer", "firstName lastName phone").populate("rider", "firstName lastName phone vehicleType");
+    let ride = await Ride.findById(rideId).populate("customer", "firstName lastName phone").populate("rider", "firstName lastName phone vehicleType photo");
 
     if (!ride) {
       throw new NotFoundError("Ride not found");
@@ -196,7 +196,7 @@ export const cancelRide = async (req, res) => {
   try {
     const ride = await Ride.findById(rideId)
       .populate("customer", "firstName lastName phone")
-      .populate("rider", "firstName lastName phone");
+      .populate("rider", "firstName lastName phone photo");
 
     if (!ride) {
       throw new NotFoundError("Ride not found");
@@ -370,8 +370,8 @@ export const getMyRides = async (req, res) => {
     }
 
     const rides = await Ride.find(query)
-      .populate("customer", "firstName lastName phone email")
-      .populate("rider", "firstName lastName phone email vehicleType")
+      .populate("customer", "firstName lastName phone email photo")
+      .populate("rider", "firstName lastName phone email vehicleType photo")
       .sort({ createdAt: -1 });
 
     res.status(StatusCodes.OK).json({
@@ -423,12 +423,98 @@ export const getSearchingRides = async (req, res) => {
   }
 };
 
+export const updatePaymentMethod = async (req, res) => {
+  const { rideId } = req.params;
+  const { paymentMethod } = req.body;
+  const userId = req.user.id;
+
+  if (!rideId || !paymentMethod) {
+    throw new BadRequestError("Ride ID and payment method are required");
+  }
+
+  if (!["CASH", "GCASH"].includes(paymentMethod)) {
+    throw new BadRequestError("Invalid payment method. Must be CASH or GCASH");
+  }
+
+  try {
+    const ride = await Ride.findById(rideId)
+      .populate("customer", "firstName lastName phone")
+      .populate("rider", "firstName lastName phone vehicleType photo");
+
+    if (!ride) {
+      throw new NotFoundError("Ride not found");
+    }
+
+    // Only the customer can set the payment method
+    if (ride.customer._id.toString() !== userId) {
+      throw new BadRequestError("Only the customer can set the payment method");
+    }
+
+    // Only allow setting payment method for completed rides
+    if (ride.status !== "COMPLETED") {
+      throw new BadRequestError("Payment method can only be set for completed rides");
+    }
+
+    // Update payment method
+    ride.paymentMethod = paymentMethod;
+    ride.paymentConfirmedAt = new Date();
+    await ride.save();
+
+    console.log(`💳 Payment method updated for ride ${rideId}: ${paymentMethod}`);
+
+    // Notify rider about payment method selection
+    if (req.io && ride.rider) {
+      const riderSocket = [...req.io.sockets.sockets.values()].find(
+        socket => socket.user?.id === ride.rider._id.toString()
+      );
+      
+      if (riderSocket) {
+        console.log(`📢 Notifying rider ${ride.rider._id} about payment method: ${paymentMethod}`);
+        riderSocket.emit("paymentMethodSelected", {
+          rideId: rideId,
+          paymentMethod: paymentMethod,
+          customerName: `${ride.customer.firstName} ${ride.customer.lastName}`,
+          fare: ride.fare
+        });
+      }
+    }
+
+    res.status(StatusCodes.OK).json({
+      message: `Payment method set to ${paymentMethod}`,
+      ride,
+    });
+  } catch (error) {
+    console.error("Error updating payment method:", error);
+    throw new BadRequestError("Failed to update payment method");
+  }
+};
+
 export const createRide = async (req, res) => {
-  const { vehicle, pickup, drop } = req.body;
+  const { vehicle, pickup, drop, passengerCount } = req.body;
   const customerId = req.user.id; // Fixed: Use req.user.id instead of req.user
 
   if (!vehicle || !pickup || !drop) {
     throw new BadRequestError("Vehicle, pickup, and drop locations are required.");
+  }
+
+  // Validate passenger count based on vehicle type
+  const maxPassengers = {
+    "Single Motorcycle": 1,
+    "Tricycle": 3,
+    "Cab": 4,
+  };
+  
+  const requestedPassengers = passengerCount || 1;
+  const maxAllowed = maxPassengers[vehicle] || 1;
+  
+  if (requestedPassengers > maxAllowed) {
+    throw new BadRequestError(
+      `${vehicle} can only accommodate ${maxAllowed} passenger(s). You requested ${requestedPassengers}.`
+    );
+  }
+  
+  if (requestedPassengers < 1) {
+    throw new BadRequestError("At least 1 passenger is required.");
   }
 
   try {
@@ -455,13 +541,20 @@ export const createRide = async (req, res) => {
     const ride = await Ride.create({
       customer: customerId,
       pickup,
-      drop,
+      drop: {
+        ...drop,
+        landmark: drop.landmark || null, // Include landmark description for driver
+      },
       vehicle,
       distance,
       fare,
       otp,
+      passengerCount: requestedPassengers, // Number of passengers joining the ride
       status: "SEARCHING_FOR_RIDER",
     });
+    
+    console.log(`👥 Passenger count: ${requestedPassengers}`);
+    console.log(`📍 Drop landmark: ${drop.landmark || 'Not provided'}`);
 
     console.log(`✅ Ride created with ID: ${ride._id}, OTP: ${otp}`);
 

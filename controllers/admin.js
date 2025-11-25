@@ -148,6 +148,11 @@ export const approveUser = async (req, res) => {
     }
     
     user.status = "approved";
+    // Clear disapproval-related fields when approving
+    user.disapprovalReason = '';
+    user.penaltyComment = '';
+    user.penaltyLiftDate = null;
+    user.rejectionDeadline = null;
     await user.save();
     
     const updatedUser = await User.findById(id).select('-password');
@@ -211,9 +216,18 @@ export const disapproveUser = async (req, res) => {
     user.disapprovalReason = reason || 'No reason provided';
     
     // Set rejection deadline if provided
+    // The deadline is set to end of day (23:59:59) in Philippine timezone (Asia/Manila, UTC+8)
     if (rejectionDeadline) {
-      user.rejectionDeadline = new Date(rejectionDeadline);
-      console.log(`📅 Rejection deadline set for user ${id}: ${user.rejectionDeadline}`);
+      // Parse the date string (YYYY-MM-DD format from date input)
+      const [year, month, day] = rejectionDeadline.split('-').map(Number);
+      
+      // Create date at end of day (23:59:59) in Philippine timezone (UTC+8)
+      // We subtract 8 hours from the end of day to convert to UTC
+      // End of day in PH (23:59:59 UTC+8) = 15:59:59 UTC
+      const deadlineDate = new Date(Date.UTC(year, month - 1, day, 15, 59, 59, 999));
+      
+      user.rejectionDeadline = deadlineDate;
+      console.log(`📅 Rejection deadline set for user ${id}: ${user.rejectionDeadline.toISOString()} (End of day in Philippine time: ${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')} 23:59:59 PHT)`);
     }
     
     await user.save();
@@ -329,8 +343,34 @@ export const updateUser = async (req, res) => {
     if (firstName !== undefined) user.firstName = firstName;
     if (middleName !== undefined) user.middleName = middleName;
     if (lastName !== undefined) user.lastName = lastName;
-    if (phone !== undefined) user.phone = phone;
-    if (schoolId !== undefined) user.schoolId = schoolId;
+    // Phone update with role-based validation
+    if (phone !== undefined) {
+      if (phone) {
+        const existingPhoneUser = await User.findOne({ 
+          phone, 
+          role: user.role, 
+          _id: { $ne: id } 
+        });
+        if (existingPhoneUser) {
+          throw new BadRequestError(`Phone number already in use by another ${user.role}`);
+        }
+      }
+      user.phone = phone;
+    }
+    // School ID update with role-based validation
+    if (schoolId !== undefined) {
+      if (schoolId) {
+        const existingSchoolIdUser = await User.findOne({ 
+          schoolId, 
+          role: user.role, 
+          _id: { $ne: id } 
+        });
+        if (existingSchoolIdUser) {
+          throw new BadRequestError(`School ID already in use by another ${user.role}`);
+        }
+      }
+      user.schoolId = schoolId;
+    }
     if (licenseId !== undefined) user.licenseId = licenseId;
     if (sex !== undefined && sex !== '') user.sex = sex;
     if (approved !== undefined) user.approved = approved;

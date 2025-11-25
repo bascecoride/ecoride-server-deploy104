@@ -3,10 +3,18 @@ import { refreshToken, auth, login, register, testAuth, getUserProfile, updateUs
 import authenticateUser from '../middleware/authentication.js';
 import { upload } from '../utils/cloudinary.js';
 import User from '../models/User.js';
+import LoginAttempt from '../models/LoginAttempt.js';
 import { StatusCodes } from 'http-status-codes';
 import jwt from 'jsonwebtoken';
 
 const router = express.Router();
+
+// Login attempt configuration - Industry standard settings
+const LOGIN_CONFIG = {
+  MAX_ATTEMPTS: 5,           // Maximum failed attempts before lockout
+  LOCKOUT_MINUTES: 30,       // Lockout duration in minutes
+  CLEAR_ON_SUCCESS: true     // Clear failed attempts on successful login
+};
 
 // Debug route to test if auth routes are working
 router.get('/test', (req, res) => {
@@ -33,33 +41,145 @@ router.post('/upload-documents', upload.fields([
   { name: 'orCr', maxCount: 1 }
 ]), uploadDocuments); // Upload verification documents
 
-// Special admin login endpoint
+// Special admin login endpoint (legacy - for User model admins)
+// Note: This endpoint is kept for backward compatibility with User model admins
+// The main admin login is at /api/admin-management/login which uses the Admin model
 router.post('/admin-login', async (req, res) => {
+  const ipAddress = req.ip || req.headers['x-forwarded-for'] || 'unknown';
+  const userAgent = req.headers['user-agent'] || 'unknown';
   const { email, password } = req.body;
   
-  console.log('Admin login attempt:', email);
+  console.log('Admin login attempt (legacy):', email);
   
   try {
-    // Find admin user by email
-    const admin = await User.findOne({ email, role: 'admin' });
+    if (!email || !password) {
+      return res.status(StatusCodes.BAD_REQUEST).json({ message: 'Please provide email and password' });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    
+    // ============================================
+    // STEP 1: Check if email is currently locked out
+    // ============================================
+    const lockoutStatus = await LoginAttempt.checkLockoutStatus(
+      normalizedEmail,
+      LOGIN_CONFIG.MAX_ATTEMPTS,
+      LOGIN_CONFIG.LOCKOUT_MINUTES
+    );
+    
+    if (lockoutStatus.isLocked) {
+      console.log(`🔒 Login blocked - Account locked: ${normalizedEmail}`);
+      
+      await LoginAttempt.recordAttempt({
+        email: normalizedEmail,
+        ipAddress,
+        userAgent,
+        success: false,
+        failureReason: 'account_locked',
+        attemptType: 'admin'
+      });
+      
+      return res.status(StatusCodes.TOO_MANY_REQUESTS).json({
+        message: `Account temporarily locked due to too many failed login attempts. Please try again in ${lockoutStatus.remainingTime} minute(s).`,
+        isLocked: true,
+        remainingTime: lockoutStatus.remainingTime,
+        remainingSeconds: lockoutStatus.remainingSeconds,
+        lockoutEndsAt: lockoutStatus.lockoutEndsAt
+      });
+    }
+
+    // ============================================
+    // STEP 2: Find admin user by email
+    // ============================================
+    const admin = await User.findOne({ email: normalizedEmail, role: 'admin' });
     
     if (!admin) {
-      console.log('Admin not found with email:', email);
-      return res.status(StatusCodes.UNAUTHORIZED).json({ message: 'Invalid credentials' });
+      console.log('Admin not found with email:', normalizedEmail);
+      
+      await LoginAttempt.recordAttempt({
+        email: normalizedEmail,
+        ipAddress,
+        userAgent,
+        success: false,
+        failureReason: 'invalid_email',
+        attemptType: 'admin'
+      });
+      
+      const updatedStatus = await LoginAttempt.checkLockoutStatus(
+        normalizedEmail,
+        LOGIN_CONFIG.MAX_ATTEMPTS,
+        LOGIN_CONFIG.LOCKOUT_MINUTES
+      );
+      
+      return res.status(StatusCodes.UNAUTHORIZED).json({
+        message: 'Invalid credentials',
+        attemptsRemaining: updatedStatus.attemptsRemaining,
+        warningMessage: updatedStatus.attemptsRemaining <= 2 
+          ? `Warning: ${updatedStatus.attemptsRemaining} attempt(s) remaining before account lockout.`
+          : null
+      });
     }
     
-    // Check password
+    // ============================================
+    // STEP 3: Check password
+    // ============================================
     const isPasswordCorrect = await admin.comparePassword(password);
     if (!isPasswordCorrect) {
-      console.log('Incorrect password for admin');
-      return res.status(StatusCodes.UNAUTHORIZED).json({ message: 'Invalid credentials' });
+      console.log('Incorrect password for admin:', normalizedEmail);
+      
+      await LoginAttempt.recordAttempt({
+        email: normalizedEmail,
+        ipAddress,
+        userAgent,
+        success: false,
+        failureReason: 'invalid_password',
+        attemptType: 'admin'
+      });
+      
+      const updatedStatus = await LoginAttempt.checkLockoutStatus(
+        normalizedEmail,
+        LOGIN_CONFIG.MAX_ATTEMPTS,
+        LOGIN_CONFIG.LOCKOUT_MINUTES
+      );
+      
+      if (updatedStatus.isLocked) {
+        return res.status(StatusCodes.TOO_MANY_REQUESTS).json({
+          message: `Account locked due to ${LOGIN_CONFIG.MAX_ATTEMPTS} failed login attempts. Please try again in ${LOGIN_CONFIG.LOCKOUT_MINUTES} minutes.`,
+          isLocked: true,
+          remainingTime: updatedStatus.remainingTime,
+          remainingSeconds: updatedStatus.remainingSeconds,
+          lockoutEndsAt: updatedStatus.lockoutEndsAt
+        });
+      }
+      
+      return res.status(StatusCodes.UNAUTHORIZED).json({
+        message: 'Invalid credentials',
+        attemptsRemaining: updatedStatus.attemptsRemaining,
+        warningMessage: updatedStatus.attemptsRemaining <= 2 
+          ? `Warning: ${updatedStatus.attemptsRemaining} attempt(s) remaining before account lockout.`
+          : null
+      });
     }
     
-    // Generate tokens
+    // ============================================
+    // STEP 4: Successful login
+    // ============================================
+    console.log(`✅ Admin login successful: ${normalizedEmail}`);
+    
+    await LoginAttempt.recordAttempt({
+      email: normalizedEmail,
+      ipAddress,
+      userAgent,
+      success: true,
+      attemptType: 'admin'
+    });
+    
+    if (LOGIN_CONFIG.CLEAR_ON_SUCCESS) {
+      await LoginAttempt.clearFailedAttempts(normalizedEmail);
+    }
+    
     const accessToken = admin.createAccessToken();
     const refreshToken = admin.createRefreshToken();
-    
-    console.log('Admin login successful');
     
     return res.status(StatusCodes.OK).json({
       message: 'Admin logged in successfully',

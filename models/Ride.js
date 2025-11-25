@@ -22,6 +22,15 @@ const rideSchema = new Schema(
       address: { type: String, required: true },
       latitude: { type: Number, required: true },
       longitude: { type: Number, required: true },
+      landmark: { type: String, default: null }, // Landmark description to help driver find passenger
+    },
+    // Number of passengers joining the ride (including the person booking)
+    passengerCount: {
+      type: Number,
+      required: true,
+      default: 1,
+      min: 1,
+      max: 4, // Max 4 passengers for Cab
     },
     fare: {
       type: Number,
@@ -68,6 +77,15 @@ const rideSchema = new Schema(
       ref: "User",
       default: [],
       // Array of rider IDs who have cancelled this ride - they won't see it again
+    },
+    paymentMethod: {
+      type: String,
+      enum: ["CASH", "GCASH"],
+      default: null,
+    },
+    paymentConfirmedAt: {
+      type: Date,
+      default: null,
     },
   },
   {

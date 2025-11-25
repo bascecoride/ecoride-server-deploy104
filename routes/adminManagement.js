@@ -7,7 +7,10 @@ import {
   deleteAdmin,
   toggleAdminStatus,
   getActivityLogs,
-  adminLogin
+  adminLogin,
+  getLoginAttempts,
+  unlockAdminAccount,
+  checkLockoutStatus
 } from '../controllers/adminManagement.js';
 import authenticateUser from '../middleware/authentication.js';
 
@@ -31,14 +34,19 @@ const isSuperAdmin = (req, res, next) => {
   }
 };
 
-// Public routes
+// Public routes (no authentication required)
 router.post('/login', adminLogin);
+router.post('/check-lockout', checkLockoutStatus);  // Check lockout status before login
 
 // Protected routes - require authentication
 router.use(authenticateUser);
 
 // Activity logs - accessible by all admins
 router.get('/activity-logs', isAdmin, getActivityLogs);
+
+// Login attempts management - super-admin only
+router.get('/login-attempts', isSuperAdmin, getLoginAttempts);
+router.post('/unlock-account', isSuperAdmin, unlockAdminAccount);
 
 // Admin management routes - super-admin only
 router.get('/admins', isSuperAdmin, getAllAdmins);

@@ -8,7 +8,10 @@ import {
   getRideStatusMonitoring,
   getPeakHoursAnalysis,
   getPopularRoutes,
-  getCompletedRidesDebug
+  getCompletedRidesDebug,
+  getVehicleBreakdown,
+  getPaymentMethodAnalytics,
+  getRideStatusBreakdown
 } from '../controllers/analytics.js';
 import authenticateUser from '../middleware/authentication.js';
 
@@ -42,5 +45,8 @@ router.get('/ride-monitoring', getRideStatusMonitoring);
 router.get('/peak-hours', getPeakHoursAnalysis);
 router.get('/popular-routes', getPopularRoutes);
 router.get('/debug/completed-rides', getCompletedRidesDebug);
+router.get('/vehicle-breakdown', getVehicleBreakdown);
+router.get('/payment-methods', getPaymentMethodAnalytics);
+router.get('/ride-status-breakdown', getRideStatusBreakdown);
 
 export default router;

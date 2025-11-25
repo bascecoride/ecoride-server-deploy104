@@ -1,7 +1,15 @@
 import Admin from '../models/Admin.js';
 import ActivityLog from '../models/ActivityLog.js';
+import LoginAttempt from '../models/LoginAttempt.js';
 import { StatusCodes } from 'http-status-codes';
 import { BadRequestError, NotFoundError, UnauthenticatedError } from '../errors/index.js';
+
+// Login attempt configuration - Industry standard settings
+const LOGIN_CONFIG = {
+  MAX_ATTEMPTS: 5,           // Maximum failed attempts before lockout
+  LOCKOUT_MINUTES: 30,       // Lockout duration in minutes
+  CLEAR_ON_SUCCESS: true     // Clear failed attempts on successful login
+};
 
 // Helper function to log activity
 export const logActivity = async (adminId, adminName, action, targetType, targetId, targetName, description, metadata = {}, ipAddress = null) => {
@@ -502,8 +510,11 @@ export const getActivityLogs = async (req, res) => {
   }
 };
 
-// Admin login
+// Admin login with rate limiting and lockout protection
 export const adminLogin = async (req, res) => {
+  const ipAddress = req.ip || req.headers['x-forwarded-for'] || 'unknown';
+  const userAgent = req.headers['user-agent'] || 'unknown';
+  
   try {
     const { email, password } = req.body;
 
@@ -511,28 +522,182 @@ export const adminLogin = async (req, res) => {
       throw new BadRequestError('Please provide email and password');
     }
 
-    const admin = await Admin.findOne({ email });
+    const normalizedEmail = email.toLowerCase().trim();
+    
+    // ============================================
+    // STEP 1: Check if email is currently locked out
+    // ============================================
+    const lockoutStatus = await LoginAttempt.checkLockoutStatus(
+      normalizedEmail,
+      LOGIN_CONFIG.MAX_ATTEMPTS,
+      LOGIN_CONFIG.LOCKOUT_MINUTES
+    );
+    
+    if (lockoutStatus.isLocked) {
+      console.log(`🔒 Login blocked - Account locked: ${normalizedEmail}`);
+      console.log(`⏱️ Lockout remaining: ${lockoutStatus.remainingTime} minutes`);
+      
+      // Record this blocked attempt
+      await LoginAttempt.recordAttempt({
+        email: normalizedEmail,
+        ipAddress,
+        userAgent,
+        success: false,
+        failureReason: 'account_locked',
+        attemptType: 'admin'
+      });
+      
+      return res.status(StatusCodes.TOO_MANY_REQUESTS).json({
+        message: `Account temporarily locked due to too many failed login attempts. Please try again in ${lockoutStatus.remainingTime} minute(s).`,
+        isLocked: true,
+        remainingTime: lockoutStatus.remainingTime,
+        remainingSeconds: lockoutStatus.remainingSeconds,
+        lockoutEndsAt: lockoutStatus.lockoutEndsAt
+      });
+    }
+
+    // ============================================
+    // STEP 2: Find admin by email
+    // ============================================
+    const admin = await Admin.findOne({ email: normalizedEmail });
     
     if (!admin) {
-      throw new UnauthenticatedError('Invalid credentials');
+      console.log(`❌ Login failed - Admin not found: ${normalizedEmail}`);
+      
+      // Record failed attempt - invalid email
+      await LoginAttempt.recordAttempt({
+        email: normalizedEmail,
+        ipAddress,
+        userAgent,
+        success: false,
+        failureReason: 'invalid_email',
+        attemptType: 'admin'
+      });
+      
+      // Get updated lockout status to show remaining attempts
+      const updatedStatus = await LoginAttempt.checkLockoutStatus(
+        normalizedEmail,
+        LOGIN_CONFIG.MAX_ATTEMPTS,
+        LOGIN_CONFIG.LOCKOUT_MINUTES
+      );
+      
+      return res.status(StatusCodes.UNAUTHORIZED).json({
+        message: 'Invalid credentials',
+        attemptsRemaining: updatedStatus.attemptsRemaining,
+        warningMessage: updatedStatus.attemptsRemaining <= 2 
+          ? `Warning: ${updatedStatus.attemptsRemaining} attempt(s) remaining before account lockout.`
+          : null
+      });
     }
 
-    // Check if admin is active
+    // ============================================
+    // STEP 3: Check if admin account is active
+    // ============================================
     if (!admin.isActive) {
-      throw new UnauthenticatedError('Your account has been deactivated. Please contact a super-admin.');
+      console.log(`❌ Login failed - Account inactive: ${normalizedEmail}`);
+      
+      // Record failed attempt - account inactive
+      await LoginAttempt.recordAttempt({
+        email: normalizedEmail,
+        ipAddress,
+        userAgent,
+        success: false,
+        failureReason: 'account_inactive',
+        attemptType: 'admin'
+      });
+      
+      return res.status(StatusCodes.UNAUTHORIZED).json({
+        message: 'Your account has been deactivated. Please contact a super-admin.'
+      });
     }
 
+    // ============================================
+    // STEP 4: Verify password
+    // ============================================
     const isPasswordCorrect = await admin.comparePassword(password);
+    
     if (!isPasswordCorrect) {
-      throw new UnauthenticatedError('Invalid credentials');
+      console.log(`❌ Login failed - Invalid password: ${normalizedEmail}`);
+      
+      // Record failed attempt - invalid password
+      await LoginAttempt.recordAttempt({
+        email: normalizedEmail,
+        ipAddress,
+        userAgent,
+        success: false,
+        failureReason: 'invalid_password',
+        attemptType: 'admin'
+      });
+      
+      // Get updated lockout status
+      const updatedStatus = await LoginAttempt.checkLockoutStatus(
+        normalizedEmail,
+        LOGIN_CONFIG.MAX_ATTEMPTS,
+        LOGIN_CONFIG.LOCKOUT_MINUTES
+      );
+      
+      // Check if this attempt triggered a lockout
+      if (updatedStatus.isLocked) {
+        console.log(`🔒 Account now locked: ${normalizedEmail}`);
+        
+        return res.status(StatusCodes.TOO_MANY_REQUESTS).json({
+          message: `Account locked due to ${LOGIN_CONFIG.MAX_ATTEMPTS} failed login attempts. Please try again in ${LOGIN_CONFIG.LOCKOUT_MINUTES} minutes.`,
+          isLocked: true,
+          remainingTime: updatedStatus.remainingTime,
+          remainingSeconds: updatedStatus.remainingSeconds,
+          lockoutEndsAt: updatedStatus.lockoutEndsAt
+        });
+      }
+      
+      return res.status(StatusCodes.UNAUTHORIZED).json({
+        message: 'Invalid credentials',
+        attemptsRemaining: updatedStatus.attemptsRemaining,
+        warningMessage: updatedStatus.attemptsRemaining <= 2 
+          ? `Warning: ${updatedStatus.attemptsRemaining} attempt(s) remaining before account lockout.`
+          : null
+      });
     }
 
-    // Update last login
+    // ============================================
+    // STEP 5: Successful login - Clear failed attempts
+    // ============================================
+    console.log(`✅ Login successful: ${normalizedEmail}`);
+    
+    // Record successful login
+    await LoginAttempt.recordAttempt({
+      email: normalizedEmail,
+      ipAddress,
+      userAgent,
+      success: true,
+      attemptType: 'admin'
+    });
+    
+    // Clear all previous failed attempts on successful login
+    if (LOGIN_CONFIG.CLEAR_ON_SUCCESS) {
+      await LoginAttempt.clearFailedAttempts(normalizedEmail);
+      console.log(`🧹 Cleared failed login attempts for: ${normalizedEmail}`);
+    }
+
+    // Update last login timestamp
     admin.lastLogin = new Date();
     await admin.save();
 
+    // Generate tokens
     const accessToken = admin.createAccessToken();
     const refreshToken = admin.createRefreshToken();
+
+    // Log successful login activity
+    await logActivity(
+      admin._id,
+      admin.name || admin.username,
+      'ADMIN_LOGIN',
+      'ADMIN',
+      admin._id,
+      admin.name,
+      `Admin logged in successfully from IP: ${ipAddress}`,
+      { ipAddress, userAgent },
+      ipAddress
+    );
 
     // Return admin data without password
     const adminData = {
@@ -569,6 +734,133 @@ export const adminLogin = async (req, res) => {
     // Generic error response
     return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ 
       message: 'Error during login',
+      error: error.message
+    });
+  }
+};
+
+// Get login attempts for an admin (super-admin only)
+export const getLoginAttempts = async (req, res) => {
+  try {
+    // Check if user is super-admin
+    if (req.user.adminRole !== 'super-admin') {
+      return res.status(StatusCodes.FORBIDDEN).json({ 
+        message: 'Access denied. Super-admin privileges required.' 
+      });
+    }
+
+    const { email, limit = 20 } = req.query;
+    
+    if (!email) {
+      throw new BadRequestError('Email is required');
+    }
+
+    const attempts = await LoginAttempt.getLoginHistory(email, parseInt(limit));
+    const lockoutStatus = await LoginAttempt.checkLockoutStatus(
+      email,
+      LOGIN_CONFIG.MAX_ATTEMPTS,
+      LOGIN_CONFIG.LOCKOUT_MINUTES
+    );
+
+    return res.status(StatusCodes.OK).json({
+      email,
+      lockoutStatus,
+      attempts,
+      config: {
+        maxAttempts: LOGIN_CONFIG.MAX_ATTEMPTS,
+        lockoutMinutes: LOGIN_CONFIG.LOCKOUT_MINUTES
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching login attempts:', error);
+    return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ 
+      message: 'Error fetching login attempts',
+      error: error.message
+    });
+  }
+};
+
+// Manually unlock an admin account (super-admin only)
+export const unlockAdminAccount = async (req, res) => {
+  try {
+    // Check if user is super-admin
+    if (req.user.adminRole !== 'super-admin') {
+      return res.status(StatusCodes.FORBIDDEN).json({ 
+        message: 'Access denied. Super-admin privileges required.' 
+      });
+    }
+
+    const { email } = req.body;
+    
+    if (!email) {
+      throw new BadRequestError('Email is required');
+    }
+
+    // Clear all failed attempts for this email
+    const result = await LoginAttempt.clearFailedAttempts(email);
+    
+    // Log activity
+    await logActivity(
+      req.user.id,
+      req.user.name || req.user.username,
+      'UNLOCKED_ADMIN_ACCOUNT',
+      'ADMIN',
+      null,
+      email,
+      `Manually unlocked admin account: ${email}`,
+      { email },
+      req.ip
+    );
+
+    console.log(`🔓 Admin account manually unlocked: ${email}`);
+
+    return res.status(StatusCodes.OK).json({
+      message: `Account ${email} has been unlocked successfully`,
+      email
+    });
+  } catch (error) {
+    console.error('Error unlocking admin account:', error);
+    return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ 
+      message: 'Error unlocking admin account',
+      error: error.message
+    });
+  }
+};
+
+// Check lockout status for an email (public endpoint - for login page)
+export const checkLockoutStatus = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(StatusCodes.BAD_REQUEST).json({ 
+        message: 'Email is required' 
+      });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    
+    const lockoutStatus = await LoginAttempt.checkLockoutStatus(
+      normalizedEmail,
+      LOGIN_CONFIG.MAX_ATTEMPTS,
+      LOGIN_CONFIG.LOCKOUT_MINUTES
+    );
+
+    return res.status(StatusCodes.OK).json({
+      email: normalizedEmail,
+      isLocked: lockoutStatus.isLocked,
+      remainingTime: lockoutStatus.remainingTime,
+      remainingSeconds: lockoutStatus.remainingSeconds,
+      lockoutEndsAt: lockoutStatus.lockoutEndsAt || null,
+      attemptsRemaining: lockoutStatus.attemptsRemaining,
+      failedAttempts: lockoutStatus.failedAttempts,
+      maxAttempts: LOGIN_CONFIG.MAX_ATTEMPTS,
+      lockoutMinutes: LOGIN_CONFIG.LOCKOUT_MINUTES
+    });
+  } catch (error) {
+    console.error('Error checking lockout status:', error);
+    return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ 
+      message: 'Error checking lockout status',
       error: error.message
     });
   }

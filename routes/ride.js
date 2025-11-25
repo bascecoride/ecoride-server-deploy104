@@ -1,5 +1,5 @@
 import express from 'express';
-import { createRide, updateRideStatus, acceptRide, getMyRides, cancelRide, getSearchingRides } from '../controllers/ride.js';
+import { createRide, updateRideStatus, acceptRide, getMyRides, cancelRide, getSearchingRides, updatePaymentMethod } from '../controllers/ride.js';
 
 const router = express.Router();
 
@@ -8,6 +8,7 @@ const router = express.Router();
 router.post('/create', createRide);
 router.patch('/accept/:rideId', acceptRide);
 router.patch('/update/:rideId', updateRideStatus);
+router.patch('/payment/:rideId', updatePaymentMethod);
 router.delete('/cancel/:rideId', cancelRide);
 router.get('/rides', getMyRides);
 router.get('/searching', getSearchingRides);

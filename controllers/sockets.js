@@ -5,6 +5,54 @@ import Ride from "../models/Ride.js";
 import Rating from "../models/Rating.js";
 import Chat from "../models/Chat.js";
 import Message from "../models/Message.js";
+import AppSettings from "../models/AppSettings.js";
+
+// Helper function to get distance radius from database (with caching)
+let cachedDistanceRadius = null;
+let cacheTimestamp = null;
+const CACHE_DURATION = 30000; // 30 seconds cache (reduced for faster updates)
+
+// Export function to invalidate cache (called when admin updates setting)
+export const invalidateDistanceRadiusCache = () => {
+  cachedDistanceRadius = null;
+  cacheTimestamp = null;
+  console.log("🔄 Distance radius cache invalidated");
+};
+
+const getDistanceRadiusInMeters = async () => {
+  try {
+    // Check if cache is valid
+    if (cachedDistanceRadius !== null && cacheTimestamp && (Date.now() - cacheTimestamp < CACHE_DURATION)) {
+      console.log(`📏 Using cached distance radius: ${cachedDistanceRadius}m`);
+      return cachedDistanceRadius;
+    }
+    
+    // Fetch from database
+    let setting = await AppSettings.findOne({ settingKey: "DISTANCE_RADIUS" });
+    
+    // If setting doesn't exist, create default (3km)
+    if (!setting) {
+      setting = await AppSettings.create({
+        settingKey: "DISTANCE_RADIUS",
+        value: 3,
+        unit: "km",
+        description: "Maximum distance radius for showing nearby riders/bookings"
+      });
+      console.log("✅ Created default distance radius setting: 3km");
+    }
+    
+    // Convert km to meters and cache
+    cachedDistanceRadius = setting.value * 1000;
+    cacheTimestamp = Date.now();
+    
+    console.log(`📏 Distance radius loaded from DB: ${setting.value}km (${cachedDistanceRadius}m)`);
+    return cachedDistanceRadius;
+  } catch (error) {
+    console.error("❌ Error fetching distance radius:", error);
+    // Default fallback: 3km = 3000 meters
+    return 3000;
+  }
+};
 
 const onDutyRiders = new Map();
 
@@ -46,19 +94,46 @@ const handleSocketConnection = (io) => {
 
   io.on("connection", (socket) => {
     const user = socket.user;
-    console.log(`User Joined: ${user.id} (${user.role})`);
+    console.log(`👤 User Joined: ${user.id} (${user.role}) - Socket ID: ${socket.id}`);
+    
+    // Log all registered event listeners for debugging
+    console.log(`📋 Registering socket events for ${user.role}...`);
 
     if (user.role === "rider") {
+      console.log(`🏍️ Setting up rider-specific events for ${user.id}`);
+      
       socket.on("goOnDuty", async (coords) => {
+        console.log(`📥 Received goOnDuty event from rider ${user.id}`);
+        console.log(`📥 Raw coords received:`, coords);
         // Get rider's vehicle type from database
         const riderInfo = await User.findById(user.id).select("vehicleType firstName lastName");
         
         console.log(`🚗 Rider ${user.id} (${riderInfo?.firstName} ${riderInfo?.lastName}) going on duty with coords:`, coords);
         console.log(`🚗 Rider ${user.id} vehicle type:`, riderInfo?.vehicleType);
         
+        // Validate coordinates before storing
+        if (!coords || typeof coords.latitude !== 'number' || typeof coords.longitude !== 'number') {
+          console.error(`❌ Rider ${user.id} provided invalid coordinates:`, coords);
+          return;
+        }
+        
+        // Ensure coordinates are valid numbers
+        const validCoords = {
+          latitude: parseFloat(coords.latitude),
+          longitude: parseFloat(coords.longitude),
+          heading: coords.heading || 0
+        };
+        
+        if (isNaN(validCoords.latitude) || isNaN(validCoords.longitude)) {
+          console.error(`❌ Rider ${user.id} coordinates are NaN after parsing:`, validCoords);
+          return;
+        }
+        
+        console.log(`✅ Rider ${user.id} validated coords:`, validCoords);
+        
         onDutyRiders.set(user.id, { 
           socketId: socket.id, 
-          coords,
+          coords: validCoords,
           riderId: user.id,
           vehicleType: riderInfo?.vehicleType || "Tricycle", // Store vehicle type
           name: `${riderInfo?.firstName || ''} ${riderInfo?.lastName || ''}`
@@ -126,12 +201,29 @@ const handleSocketConnection = (io) => {
 
       socket.on("updateLocation", (coords) => {
         if (onDutyRiders.has(user.id)) {
-          onDutyRiders.get(user.id).coords = coords;
-          console.log(`rider ${user.id} updated location.`);
+          // Validate coordinates before updating
+          if (!coords || typeof coords.latitude !== 'number' || typeof coords.longitude !== 'number') {
+            console.warn(`⚠️ Rider ${user.id} sent invalid location update:`, coords);
+            return;
+          }
+          
+          const validCoords = {
+            latitude: parseFloat(coords.latitude),
+            longitude: parseFloat(coords.longitude),
+            heading: coords.heading || 0
+          };
+          
+          if (isNaN(validCoords.latitude) || isNaN(validCoords.longitude)) {
+            console.warn(`⚠️ Rider ${user.id} location update has NaN values:`, validCoords);
+            return;
+          }
+          
+          onDutyRiders.get(user.id).coords = validCoords;
+          console.log(`📍 Rider ${user.id} updated location: (${validCoords.latitude}, ${validCoords.longitude})`);
           updateNearbyriders();
           socket.to(`rider_${user.id}`).emit("riderLocationUpdate", {
             riderId: user.id,
-            coords,
+            coords: validCoords,
           });
         }
       });
@@ -197,8 +289,28 @@ const handleSocketConnection = (io) => {
     if (user.role === "customer") {
       socket.on("subscribeToZone", (customerCoords) => {
         console.log(`Customer ${user.id} subscribing to zone with coords:`, customerCoords);
-        socket.user.coords = customerCoords;
-        sendNearbyRiders(socket, customerCoords);
+        
+        // Validate customer coordinates
+        if (!customerCoords || typeof customerCoords.latitude !== 'number' || typeof customerCoords.longitude !== 'number') {
+          console.error(`❌ Customer ${user.id} provided invalid coordinates:`, customerCoords);
+          socket.emit("nearbyriders", []);
+          return;
+        }
+        
+        const validCoords = {
+          latitude: parseFloat(customerCoords.latitude),
+          longitude: parseFloat(customerCoords.longitude)
+        };
+        
+        if (isNaN(validCoords.latitude) || isNaN(validCoords.longitude)) {
+          console.error(`❌ Customer ${user.id} coordinates are NaN:`, validCoords);
+          socket.emit("nearbyriders", []);
+          return;
+        }
+        
+        console.log(`✅ Customer ${user.id} validated coords:`, validCoords);
+        socket.user.coords = validCoords;
+        sendNearbyRiders(socket, validCoords);
       });
 
       socket.on("getDriverDetails", async ({ riderId }) => {
@@ -207,7 +319,7 @@ const handleSocketConnection = (io) => {
             return socket.emit("error", { message: "Driver ID is required" });
           }
           
-          const driver = await User.findById(riderId).select("firstName lastName phone licenseId _id");
+          const driver = await User.findById(riderId).select("firstName lastName phone licenseId photo vehicleType _id");
           
           if (!driver) {
             return socket.emit("error", { message: "Driver not found" });
@@ -222,8 +334,7 @@ const handleSocketConnection = (io) => {
           const averageRating = totalRatings > 0 ? (sumRatings / totalRatings).toFixed(1) : "0.0";
           
           // Get vehicle type from onDuty data or database
-          const driverDetails = await User.findById(riderId).select("vehicleType");
-          const vehicleType = onDutyRiders.get(riderId)?.vehicleType || driverDetails?.vehicleType || "Tricycle";
+          const vehicleType = onDutyRiders.get(riderId)?.vehicleType || driver?.vehicleType || "Tricycle";
           
           // Send driver details back to the customer
           socket.emit("driverDetailsResponse", {
@@ -232,12 +343,13 @@ const handleSocketConnection = (io) => {
             lastName: driver.lastName,
             phone: driver.phone,
             licenseId: driver.licenseId,
+            photo: driver.photo || null,
             averageRating: averageRating,
             totalRatings: totalRatings,
             vehicleType: vehicleType
           });
           
-          console.log(`Sent driver ${riderId} details to customer ${user.id}`);
+          console.log(`Sent driver ${riderId} details to customer ${user.id} (photo: ${driver.photo ? 'yes' : 'no'})`);
         } catch (error) {
           console.error("Error fetching driver details:", error);
           socket.emit("error", { message: "Error fetching driver details" });
@@ -344,7 +456,7 @@ const handleSocketConnection = (io) => {
             // ✅ FIXED: Update status to CANCELLED instead of deleting, but protect COMPLETED rides
             const cancelRide = await Ride.findById(rideId)
               .populate("customer", "firstName lastName phone")
-              .populate("rider", "firstName lastName phone");
+              .populate("rider", "firstName lastName phone photo");
             
             if (cancelRide) {
               // CRITICAL: Never change a COMPLETED ride's status
@@ -909,6 +1021,120 @@ const handleSocketConnection = (io) => {
 
     // ============ END CHAT SOCKET EVENTS ============
 
+    // ============ GLOBAL RIDE CANCELLATION (works for any ride status) ============
+    socket.on("customerCancelRide", async (data) => {
+      try {
+        const { rideId, reason } = data;
+        console.log(`🚫 Customer ${user.id} requesting to cancel ride ${rideId} with reason: "${reason}"`);
+        
+        if (!rideId) {
+          socket.emit("cancelError", { message: "Ride ID is required" });
+          return;
+        }
+        
+        // Find the ride
+        const ride = await Ride.findById(rideId)
+          .populate("customer", "firstName lastName phone")
+          .populate("rider", "firstName lastName phone photo");
+        
+        if (!ride) {
+          console.log(`❌ Ride ${rideId} not found`);
+          socket.emit("cancelError", { message: "Ride not found" });
+          return;
+        }
+        
+        // Verify the customer owns this ride
+        if (ride.customer._id.toString() !== user.id) {
+          console.log(`❌ Customer ${user.id} does not own ride ${rideId}`);
+          socket.emit("cancelError", { message: "You can only cancel your own rides" });
+          return;
+        }
+        
+        // Check if ride can be cancelled (not already completed or cancelled)
+        if (ride.status === "COMPLETED") {
+          console.log(`🔒 Ride ${rideId} is COMPLETED - cannot cancel`);
+          socket.emit("cancelError", { message: "Cannot cancel a completed ride" });
+          return;
+        }
+        
+        if (ride.status === "CANCELLED") {
+          console.log(`🔒 Ride ${rideId} is already CANCELLED`);
+          socket.emit("cancelError", { message: "Ride is already cancelled" });
+          return;
+        }
+        
+        // Get canceller name
+        const cancellerName = `${ride.customer.firstName} ${ride.customer.lastName}`;
+        
+        // Update ride status to CANCELLED
+        ride.status = "CANCELLED";
+        ride.cancelledBy = "customer";
+        ride.cancelledByName = cancellerName;
+        ride.cancelledAt = new Date();
+        
+        if (reason) {
+          ride.cancellationReason = reason;
+          console.log(`📝 Cancellation reason saved: "${reason}" by customer`);
+        }
+        
+        await ride.save();
+        console.log(`✅ Ride ${rideId} cancelled by customer ${user.id}`);
+        
+        // Broadcast to ride room
+        io.to(`ride_${rideId}`).emit("rideCanceled", {
+          message: "Ride has been cancelled by passenger",
+          ride: ride,
+          cancelledBy: "customer",
+          cancellerName: cancellerName
+        });
+        
+        // If rider was assigned, send direct notification
+        if (ride.rider) {
+          const riderSocketId = onDutyRiders.get(ride.rider._id.toString())?.socketId;
+          if (riderSocketId) {
+            console.log(`🚨 Sending cancellation alert to rider ${ride.rider._id}`);
+            io.to(riderSocketId).emit("passengerCancelledRide", {
+              rideId: rideId,
+              message: `${cancellerName} has cancelled the ride`,
+              passengerName: cancellerName,
+              reason: reason,
+              ride: ride
+            });
+          }
+          
+          // Also emit to rider's personal room
+          io.to(`user_${ride.rider._id}`).emit("passengerCancelledRide", {
+            rideId: rideId,
+            message: `${cancellerName} has cancelled the ride`,
+            passengerName: cancellerName,
+            reason: reason,
+            ride: ride
+          });
+        }
+        
+        // Broadcast to all on-duty riders to remove from their lists
+        io.to("onDuty").emit("rideCanceled", {
+          rideId: rideId,
+          ride: ride,
+          cancelledBy: "customer",
+          cancellerName: cancellerName
+        });
+        
+        // Send success response to customer
+        socket.emit("rideCanceled", { 
+          message: "Ride cancelled successfully", 
+          ride: ride,
+          success: true
+        });
+        
+        console.log(`✅ Ride ${rideId} cancellation complete - all parties notified`);
+      } catch (error) {
+        console.error(`❌ Error cancelling ride:`, error);
+        socket.emit("cancelError", { message: "Failed to cancel ride", error: error.message });
+      }
+    });
+    // ============ END GLOBAL RIDE CANCELLATION ============
+
     socket.on("disconnect", () => {
       if (user.role === "rider") onDutyRiders.delete(user.id);
       console.log(`${user.role} ${user.id} disconnected.`);
@@ -928,11 +1154,34 @@ const handleSocketConnection = (io) => {
         console.log('🔍 Finding riders near location:', location);
         console.log('👥 Total on-duty riders:', onDutyRiders.size);
         
+        // Validate customer location
+        if (!location || typeof location.latitude !== 'number' || typeof location.longitude !== 'number') {
+          console.error('❌ Invalid customer location:', location);
+          socket.emit("nearbyriders", []);
+          return [];
+        }
+        
+        // Log all on-duty riders for debugging
+        console.log('📋 On-duty riders list:');
+        for (const [riderId, rider] of onDutyRiders.entries()) {
+          console.log(`  - Rider ${riderId}: coords=${JSON.stringify(rider.coords)}, vehicle=${rider.vehicleType}`);
+        }
+        
         const nearbyRidersArray = [];
         
         // Process each rider to get complete information
         for (const [riderId, rider] of onDutyRiders.entries()) {
           try {
+            // Validate rider coordinates
+            if (!rider.coords || 
+                typeof rider.coords.latitude !== 'number' || 
+                typeof rider.coords.longitude !== 'number' ||
+                isNaN(rider.coords.latitude) ||
+                isNaN(rider.coords.longitude)) {
+              console.warn(`⚠️ Rider ${riderId} has invalid coordinates:`, rider.coords);
+              continue; // Skip this rider
+            }
+            
             // Get rider's info from database
             const riderInfo = await User.findById(riderId).select("firstName lastName photo vehicleType");
             
@@ -941,6 +1190,8 @@ const handleSocketConnection = (io) => {
               { latitude: location.latitude, longitude: location.longitude },
               { latitude: rider.coords.latitude, longitude: rider.coords.longitude }
             );
+            
+            console.log(`📏 Distance calculation: Customer(${location.latitude}, ${location.longitude}) -> Rider(${rider.coords.latitude}, ${rider.coords.longitude}) = ${distance}m`);
             
             // Get rider's ratings
             const ratings = await Rating.find({ rider: riderId });
@@ -971,12 +1222,24 @@ const handleSocketConnection = (io) => {
           }
         }
         
-        // Sort by distance
+        // Get dynamic distance radius from database
+        const maxDistanceRadius = await getDistanceRadiusInMeters();
+        
+        console.log(`📏 Max distance radius: ${maxDistanceRadius}m (${maxDistanceRadius/1000}km)`);
+        console.log(`📊 Total riders before filter: ${nearbyRidersArray.length}`);
+        
+        // Log each rider's distance vs max radius
+        nearbyRidersArray.forEach(rider => {
+          const withinRadius = rider.distance <= maxDistanceRadius;
+          console.log(`  - ${rider.firstName || rider.riderId}: ${rider.distance}m ${withinRadius ? '✅ WITHIN' : '❌ OUTSIDE'} radius`);
+        });
+        
+        // Sort by distance and filter by dynamic radius
         const nearbyriders = nearbyRidersArray
-          .filter(rider => rider.distance <= 50000000) // 50,000km for testing
+          .filter(rider => rider.distance <= maxDistanceRadius)
           .sort((a, b) => a.distance - b.distance);
         
-        console.log(`📤 Sending ${nearbyriders.length} nearby riders to customer`);
+        console.log(`📤 Sending ${nearbyriders.length} nearby riders to customer (within ${maxDistanceRadius/1000}km radius)`);
         socket.emit("nearbyriders", nearbyriders);
         
         // If this was triggered by a new ride, notify the riders

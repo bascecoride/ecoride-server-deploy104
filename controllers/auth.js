@@ -123,6 +123,7 @@ export const register = async (req, res) => {
     driverLicense,
     orCr,
     vehicleType,
+    plateNumber,
     agreedToTerms
   } = req.body;
 
@@ -153,6 +154,14 @@ export const register = async (req, res) => {
       }
     }
 
+    // Check if school ID is provided and already exists with same role
+    if (schoolId) {
+      const existingSchoolIdUser = await User.findOne({ schoolId, role });
+      if (existingSchoolIdUser) {
+        throw new BadRequestError(`School ID already registered as ${role}`);
+      }
+    }
+
     // Format licenseId if provided and user is a rider
     let formattedLicenseId = licenseId;
     if (role === "rider" && licenseId) {
@@ -161,6 +170,17 @@ export const register = async (req, res) => {
       // Basic validation for license ID format
       if (formattedLicenseId.length < 4) {
         throw new BadRequestError("License ID must be at least 4 characters");
+      }
+    }
+
+    // Format and validate plateNumber for riders
+    let formattedPlateNumber = plateNumber;
+    if (role === "rider" && plateNumber) {
+      formattedPlateNumber = plateNumber.trim().toUpperCase();
+      
+      // Basic validation for plate number format
+      if (formattedPlateNumber.length < 3) {
+        throw new BadRequestError("Plate number must be at least 3 characters");
       }
     }
 
@@ -217,6 +237,7 @@ export const register = async (req, res) => {
       driverLicense,
       orCr,
       vehicleType,
+      plateNumber: formattedPlateNumber,
       approved: false, // Ensure all new users start as unapproved
       status: "pending",
       agreedToTerms: true,
@@ -417,7 +438,7 @@ export const getUserProfile = async (req, res) => {
 
 // Update user profile information
 export const updateUserProfile = async (req, res) => {
-  const { name, firstName, middleName, lastName, phone, schoolId, licenseId, email, sex, vehicleType } = req.body;
+  const { name, firstName, middleName, lastName, phone, schoolId, licenseId, email, sex, vehicleType, plateNumber } = req.body;
 
   try {
     // Check if req.user exists
@@ -470,7 +491,21 @@ export const updateUserProfile = async (req, res) => {
       }
       user.phone = phone;
     }
-    if (schoolId !== undefined) user.schoolId = schoolId;
+    // School ID update with role-based validation
+    if (schoolId !== undefined) {
+      // Check if school ID is already in use by another user with same role
+      if (schoolId) {
+        const existingSchoolIdUser = await User.findOne({ 
+          schoolId, 
+          role: user.role, 
+          _id: { $ne: req.user.id } 
+        });
+        if (existingSchoolIdUser) {
+          throw new BadRequestError(`School ID already in use by another ${user.role}`);
+        }
+      }
+      user.schoolId = schoolId;
+    }
     
     // Format and validate licenseId if provided and user is a rider
     if (licenseId !== undefined) {
@@ -498,6 +533,23 @@ export const updateUserProfile = async (req, res) => {
       }
       user.vehicleType = vehicleType;
       console.log(`✅ Updated vehicle type for rider ${user._id} to: ${vehicleType}`);
+    }
+
+    // Update plate number if provided and user is a rider
+    if (plateNumber !== undefined && user.role === "rider") {
+      if (plateNumber) {
+        const formattedPlateNumber = plateNumber.trim().toUpperCase();
+        
+        // Basic validation for plate number format
+        if (formattedPlateNumber.length < 3) {
+          throw new BadRequestError("Plate number must be at least 3 characters");
+        }
+        
+        user.plateNumber = formattedPlateNumber;
+        console.log(`✅ Updated plate number for rider ${user._id} to: ${formattedPlateNumber}`);
+      } else {
+        user.plateNumber = plateNumber;
+      }
     }
 
     await user.save();

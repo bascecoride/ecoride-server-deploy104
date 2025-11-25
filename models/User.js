@@ -64,6 +64,12 @@ const userSchema = new Schema(
       enum: ["Single Motorcycle", "Tricycle", "Cab"],
       required: false,
     },
+    plateNumber: {
+      type: String,
+      required: false,
+      trim: true,
+      uppercase: true,
+    },
     // Role-based verification fields
     userRole: {
       type: String,
@@ -141,6 +147,10 @@ const userSchema = new Schema(
 // Create compound unique index for phone + role combination
 // This allows same phone for different roles but prevents duplicates within same role
 userSchema.index({ phone: 1, role: 1 }, { unique: true, sparse: true });
+
+// Create compound unique index for schoolId + role combination
+// This allows same school ID for different roles (driver and passenger) but prevents duplicates within same role
+userSchema.index({ schoolId: 1, role: 1 }, { unique: true, sparse: true });
 
 // Hash password before saving
 userSchema.pre('save', async function() {

@@ -30,6 +30,7 @@ import analyticsRouter from './routes/analytics.js';
 import chatRouter from './routes/chat.js';
 import fareRateRouter from './routes/fareRate.js';
 import termsRouter from './routes/termsAndConditions.js';
+import appSettingsRouter from './routes/appSettings.js';
 
 // Import socket handler
 import handleSocketConnection from './controllers/sockets.js';
@@ -173,6 +174,7 @@ app.use("/api/admin-management", adminManagementRouter);
 app.use("/api/analytics", analyticsRouter);
 app.use("/api/fare-rates", fareRateRouter);
 app.use("/api/terms", termsRouter);
+app.use("/api/app-settings", appSettingsRouter);
 
 // Middleware
 app.use(notFoundMiddleware);

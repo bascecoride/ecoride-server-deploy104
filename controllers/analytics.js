@@ -577,42 +577,45 @@ export const getRevenueTrends = async (req, res) => {
     const { timeFilter = 'all' } = req.query;
     const { startDate, endDate } = getDateRange(timeFilter);
 
+    // Use Asia/Manila timezone (UTC+8) for accurate local time display
+    const timezone = 'Asia/Manila';
+
     let groupBy;
     let dateFormat;
     
-    // Determine grouping based on time filter
+    // Determine grouping based on time filter - using Philippine timezone
     switch (timeFilter) {
       case '24h':
         groupBy = {
-          year: { $year: '$createdAt' },
-          month: { $month: '$createdAt' },
-          day: { $dayOfMonth: '$createdAt' },
-          hour: { $hour: '$createdAt' }
+          year: { $year: { date: '$createdAt', timezone } },
+          month: { $month: { date: '$createdAt', timezone } },
+          day: { $dayOfMonth: { date: '$createdAt', timezone } },
+          hour: { $hour: { date: '$createdAt', timezone } }
         };
         dateFormat = '%Y-%m-%d %H:00';
         break;
       case 'week':
         groupBy = {
-          year: { $year: '$createdAt' },
-          month: { $month: '$createdAt' },
-          day: { $dayOfMonth: '$createdAt' }
+          year: { $year: { date: '$createdAt', timezone } },
+          month: { $month: { date: '$createdAt', timezone } },
+          day: { $dayOfMonth: { date: '$createdAt', timezone } }
         };
         dateFormat = '%Y-%m-%d';
         break;
       case 'month':
         groupBy = {
-          year: { $year: '$createdAt' },
-          month: { $month: '$createdAt' },
-          week: { $week: '$createdAt' }
+          year: { $year: { date: '$createdAt', timezone } },
+          month: { $month: { date: '$createdAt', timezone } },
+          week: { $week: { date: '$createdAt', timezone } }
         };
         dateFormat = '%Y-W%U';
         break;
       default:
         groupBy = {
-          year: { $year: '$createdAt' },
-          month: { $month: '$createdAt' },
-          day: { $dayOfMonth: '$createdAt' },
-          hour: { $hour: '$createdAt' }
+          year: { $year: { date: '$createdAt', timezone } },
+          month: { $month: { date: '$createdAt', timezone } },
+          day: { $dayOfMonth: { date: '$createdAt', timezone } },
+          hour: { $hour: { date: '$createdAt', timezone } }
         };
         dateFormat = '%Y-%m-%d %H:00';
     }
@@ -759,6 +762,9 @@ export const getPeakHoursAnalysis = async (req, res) => {
     const { timeFilter = 'all' } = req.query;
     const { startDate, endDate } = getDateRange(timeFilter);
 
+    // Use Asia/Manila timezone (UTC+8) for accurate local time display
+    const timezone = 'Asia/Manila';
+
     const peakHours = await Ride.aggregate([
       {
         $match: {
@@ -768,8 +774,8 @@ export const getPeakHoursAnalysis = async (req, res) => {
       {
         $group: {
           _id: {
-            hour: { $hour: '$createdAt' },
-            dayOfWeek: { $dayOfWeek: '$createdAt' }
+            hour: { $hour: { date: '$createdAt', timezone: timezone } },
+            dayOfWeek: { $dayOfWeek: { date: '$createdAt', timezone: timezone } }
           },
           totalRides: { $sum: 1 },
           totalRevenue: { $sum: { $cond: [{ $eq: ['$status', 'COMPLETED'] }, '$fare', 0] } }
@@ -788,7 +794,7 @@ export const getPeakHoursAnalysis = async (req, res) => {
       }
     ]);
 
-    // Get day of week analysis
+    // Get day of week analysis with timezone
     const dayOfWeekAnalysis = await Ride.aggregate([
       {
         $match: {
@@ -797,7 +803,7 @@ export const getPeakHoursAnalysis = async (req, res) => {
       },
       {
         $group: {
-          _id: { $dayOfWeek: '$createdAt' },
+          _id: { $dayOfWeek: { date: '$createdAt', timezone: timezone } },
           totalRides: { $sum: 1 },
           totalRevenue: { $sum: { $cond: [{ $eq: ['$status', 'COMPLETED'] }, '$fare', 0] } }
         }
@@ -825,6 +831,316 @@ export const getPeakHoursAnalysis = async (req, res) => {
     console.error('Error fetching peak hours analysis:', error);
     res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
       message: 'Failed to fetch peak hours analysis',
+      error: error.message
+    });
+  }
+};
+
+// Get comprehensive vehicle breakdown analytics
+export const getVehicleBreakdown = async (req, res) => {
+  try {
+    const { timeFilter = 'all' } = req.query;
+    const { startDate, endDate } = getDateRange(timeFilter);
+
+    // Get rides breakdown by vehicle type
+    const vehicleRides = await Ride.aggregate([
+      {
+        $match: {
+          createdAt: { $gte: startDate, $lte: endDate }
+        }
+      },
+      {
+        $group: {
+          _id: '$vehicle',
+          totalRides: { $sum: 1 },
+          completedRides: {
+            $sum: { $cond: [{ $eq: ['$status', 'COMPLETED'] }, 1, 0] }
+          },
+          cancelledRides: {
+            $sum: { $cond: [{ $in: ['$status', ['CANCELLED', 'TIMEOUT']] }, 1, 0] }
+          },
+          totalRevenue: {
+            $sum: { $cond: [{ $eq: ['$status', 'COMPLETED'] }, '$fare', 0] }
+          },
+          totalDistance: {
+            $sum: { $cond: [{ $eq: ['$status', 'COMPLETED'] }, '$distance', 0] }
+          },
+          avgFare: {
+            $avg: { $cond: [{ $eq: ['$status', 'COMPLETED'] }, '$fare', null] }
+          }
+        }
+      },
+      {
+        $project: {
+          vehicleType: '$_id',
+          totalRides: 1,
+          completedRides: 1,
+          cancelledRides: 1,
+          totalRevenue: { $round: ['$totalRevenue', 2] },
+          totalDistance: { $round: ['$totalDistance', 2] },
+          avgFare: { $round: ['$avgFare', 2] },
+          completionRate: {
+            $round: [
+              { $multiply: [{ $divide: ['$completedRides', { $max: ['$totalRides', 1] }] }, 100] },
+              1
+            ]
+          }
+        }
+      },
+      {
+        $sort: { totalRides: -1 }
+      }
+    ]);
+
+    // Get overall totals
+    const totals = await Ride.aggregate([
+      {
+        $match: {
+          createdAt: { $gte: startDate, $lte: endDate }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalRides: { $sum: 1 },
+          completedRides: {
+            $sum: { $cond: [{ $eq: ['$status', 'COMPLETED'] }, 1, 0] }
+          },
+          cancelledRides: {
+            $sum: { $cond: [{ $in: ['$status', ['CANCELLED', 'TIMEOUT']] }, 1, 0] }
+          },
+          totalRevenue: {
+            $sum: { $cond: [{ $eq: ['$status', 'COMPLETED'] }, '$fare', 0] }
+          }
+        }
+      }
+    ]);
+
+    res.status(StatusCodes.OK).json({
+      timeFilter,
+      period: { start: startDate, end: endDate },
+      vehicleBreakdown: vehicleRides,
+      totals: totals.length > 0 ? totals[0] : {
+        totalRides: 0,
+        completedRides: 0,
+        cancelledRides: 0,
+        totalRevenue: 0
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching vehicle breakdown:', error);
+    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+      message: 'Failed to fetch vehicle breakdown',
+      error: error.message
+    });
+  }
+};
+
+// Get payment method analytics
+export const getPaymentMethodAnalytics = async (req, res) => {
+  try {
+    const { timeFilter = 'all' } = req.query;
+    const { startDate, endDate } = getDateRange(timeFilter);
+
+    // Get payment method breakdown
+    const paymentBreakdown = await Ride.aggregate([
+      {
+        $match: {
+          status: 'COMPLETED',
+          createdAt: { $gte: startDate, $lte: endDate }
+        }
+      },
+      {
+        $group: {
+          _id: { $ifNull: ['$paymentMethod', 'CASH'] },
+          totalRides: { $sum: 1 },
+          totalRevenue: { $sum: '$fare' },
+          avgFare: { $avg: '$fare' }
+        }
+      },
+      {
+        $project: {
+          paymentMethod: '$_id',
+          totalRides: 1,
+          totalRevenue: { $round: ['$totalRevenue', 2] },
+          avgFare: { $round: ['$avgFare', 2] }
+        }
+      },
+      {
+        $sort: { totalRevenue: -1 }
+      }
+    ]);
+
+    // Get payment method by vehicle type
+    const paymentByVehicle = await Ride.aggregate([
+      {
+        $match: {
+          status: 'COMPLETED',
+          createdAt: { $gte: startDate, $lte: endDate }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            vehicle: '$vehicle',
+            paymentMethod: { $ifNull: ['$paymentMethod', 'CASH'] }
+          },
+          totalRides: { $sum: 1 },
+          totalRevenue: { $sum: '$fare' }
+        }
+      },
+      {
+        $group: {
+          _id: '$_id.vehicle',
+          payments: {
+            $push: {
+              method: '$_id.paymentMethod',
+              rides: '$totalRides',
+              revenue: '$totalRevenue'
+            }
+          },
+          totalRides: { $sum: '$totalRides' },
+          totalRevenue: { $sum: '$totalRevenue' }
+        }
+      },
+      {
+        $project: {
+          vehicleType: '$_id',
+          payments: 1,
+          totalRides: 1,
+          totalRevenue: { $round: ['$totalRevenue', 2] }
+        }
+      }
+    ]);
+
+    // Calculate totals
+    const totalCash = paymentBreakdown.find(p => p.paymentMethod === 'CASH') || { totalRides: 0, totalRevenue: 0 };
+    const totalGcash = paymentBreakdown.find(p => p.paymentMethod === 'GCASH') || { totalRides: 0, totalRevenue: 0 };
+
+    res.status(StatusCodes.OK).json({
+      timeFilter,
+      period: { start: startDate, end: endDate },
+      paymentBreakdown,
+      paymentByVehicle,
+      summary: {
+        cash: {
+          rides: totalCash.totalRides,
+          revenue: totalCash.totalRevenue
+        },
+        gcash: {
+          rides: totalGcash.totalRides,
+          revenue: totalGcash.totalRevenue
+        },
+        total: {
+          rides: totalCash.totalRides + totalGcash.totalRides,
+          revenue: totalCash.totalRevenue + totalGcash.totalRevenue
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching payment method analytics:', error);
+    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+      message: 'Failed to fetch payment method analytics',
+      error: error.message
+    });
+  }
+};
+
+// Get ride status breakdown (completed, cancelled, etc.)
+export const getRideStatusBreakdown = async (req, res) => {
+  try {
+    const { timeFilter = 'all' } = req.query;
+    const { startDate, endDate } = getDateRange(timeFilter);
+
+    // Get status breakdown
+    const statusBreakdown = await Ride.aggregate([
+      {
+        $match: {
+          createdAt: { $gte: startDate, $lte: endDate }
+        }
+      },
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 },
+          totalFare: { $sum: '$fare' }
+        }
+      },
+      {
+        $project: {
+          status: '$_id',
+          count: 1,
+          totalFare: { $round: ['$totalFare', 2] }
+        }
+      }
+    ]);
+
+    // Get cancellation breakdown by who cancelled
+    const cancellationBreakdown = await Ride.aggregate([
+      {
+        $match: {
+          status: { $in: ['CANCELLED', 'TIMEOUT'] },
+          createdAt: { $gte: startDate, $lte: endDate }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            status: '$status',
+            cancelledBy: '$cancelledBy'
+          },
+          count: { $sum: 1 }
+        }
+      },
+      {
+        $project: {
+          status: '$_id.status',
+          cancelledBy: { $ifNull: ['$_id.cancelledBy', 'system'] },
+          count: 1
+        }
+      }
+    ]);
+
+    // Get cancellation by vehicle type
+    const cancellationByVehicle = await Ride.aggregate([
+      {
+        $match: {
+          status: { $in: ['CANCELLED', 'TIMEOUT'] },
+          createdAt: { $gte: startDate, $lte: endDate }
+        }
+      },
+      {
+        $group: {
+          _id: '$vehicle',
+          cancelled: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // Calculate summary
+    const completed = statusBreakdown.find(s => s.status === 'COMPLETED') || { count: 0, totalFare: 0 };
+    const cancelled = statusBreakdown.filter(s => ['CANCELLED', 'TIMEOUT'].includes(s.status))
+      .reduce((acc, s) => ({ count: acc.count + s.count }), { count: 0 });
+    const total = statusBreakdown.reduce((acc, s) => acc + s.count, 0);
+
+    res.status(StatusCodes.OK).json({
+      timeFilter,
+      period: { start: startDate, end: endDate },
+      statusBreakdown,
+      cancellationBreakdown,
+      cancellationByVehicle,
+      summary: {
+        total,
+        completed: completed.count,
+        cancelled: cancelled.count,
+        completionRate: total > 0 ? Math.round((completed.count / total) * 100 * 10) / 10 : 0,
+        cancellationRate: total > 0 ? Math.round((cancelled.count / total) * 100 * 10) / 10 : 0
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching ride status breakdown:', error);
+    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+      message: 'Failed to fetch ride status breakdown',
       error: error.message
     });
   }
