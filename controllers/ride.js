@@ -6,7 +6,8 @@ import {
   calculateFare,
   generateOTP,
 } from "../utils/mapUtils.js";
-import { broadcastNewRideRequest, broadcastRideAccepted } from "./sockets.js";
+import { broadcastNewRideRequest, broadcastRideAccepted, getDistanceRadiusInMeters, getOnDutyRiders } from "./sockets.js";
+import geolib from "geolib";
 
 
 export const acceptRide = async (req, res) => {
@@ -43,6 +44,54 @@ export const acceptRide = async (req, res) => {
     }
 
     console.log(`✅ Vehicle type match: Rider ${riderId} with ${rider.vehicleType} accepting ${ride.vehicle} ride`);
+
+    // ============================================
+    // DISTANCE VALIDATION - Industry Standard
+    // ============================================
+    // Get rider's current location from on-duty riders map
+    const onDutyRiders = getOnDutyRiders();
+    const riderData = onDutyRiders.get(riderId);
+    
+    if (!riderData || !riderData.coords) {
+      console.log(`❌ Rider ${riderId} is not on duty or has no location data`);
+      throw new BadRequestError("You must be on duty with a valid location to accept rides. Please go on duty first.");
+    }
+
+    // Get the pickup location from the ride
+    const pickupLocation = ride.pickup;
+    if (!pickupLocation || !pickupLocation.latitude || !pickupLocation.longitude) {
+      console.log(`❌ Ride ${rideId} has invalid pickup location`);
+      throw new BadRequestError("Ride has invalid pickup location");
+    }
+
+    // Calculate distance between rider and pickup location
+    const distanceToPickup = geolib.getDistance(
+      { latitude: riderData.coords.latitude, longitude: riderData.coords.longitude },
+      { latitude: pickupLocation.latitude, longitude: pickupLocation.longitude }
+    );
+
+    // Get the maximum allowed distance from admin settings
+    const maxDistanceRadius = await getDistanceRadiusInMeters();
+    
+    console.log(`📏 Distance validation for ride ${rideId}:`);
+    console.log(`   - Rider location: (${riderData.coords.latitude}, ${riderData.coords.longitude})`);
+    console.log(`   - Pickup location: (${pickupLocation.latitude}, ${pickupLocation.longitude})`);
+    console.log(`   - Distance to pickup: ${distanceToPickup}m (${(distanceToPickup/1000).toFixed(2)}km)`);
+    console.log(`   - Max allowed distance: ${maxDistanceRadius}m (${(maxDistanceRadius/1000).toFixed(2)}km)`);
+
+    // Reject if rider is too far from pickup location
+    if (distanceToPickup > maxDistanceRadius) {
+      const distanceKm = (distanceToPickup / 1000).toFixed(2);
+      const maxDistanceKm = (maxDistanceRadius / 1000).toFixed(2);
+      console.log(`❌ Rider ${riderId} is too far from pickup: ${distanceKm}km > ${maxDistanceKm}km limit`);
+      throw new BadRequestError(
+        `You are too far from the pickup location (${distanceKm}km away). ` +
+        `Maximum allowed distance is ${maxDistanceKm}km. ` +
+        `Please move closer to accept this ride.`
+      );
+    }
+
+    console.log(`✅ Distance validation passed: Rider is ${(distanceToPickup/1000).toFixed(2)}km from pickup (within ${(maxDistanceRadius/1000).toFixed(2)}km limit)`);
 
     ride.rider = riderId;
     ride.status = "START";
@@ -540,10 +589,13 @@ export const createRide = async (req, res) => {
 
     const ride = await Ride.create({
       customer: customerId,
-      pickup,
+      pickup: {
+        ...pickup,
+        landmark: pickup.landmark || null, // Include pickup landmark description for driver
+      },
       drop: {
         ...drop,
-        landmark: drop.landmark || null, // Include landmark description for driver
+        landmark: drop.landmark || null, // Include drop-off landmark description for driver
       },
       vehicle,
       distance,
@@ -554,6 +606,7 @@ export const createRide = async (req, res) => {
     });
     
     console.log(`👥 Passenger count: ${requestedPassengers}`);
+    console.log(`📍 Pickup landmark: ${pickup.landmark || 'Not provided'}`);
     console.log(`📍 Drop landmark: ${drop.landmark || 'Not provided'}`);
 
     console.log(`✅ Ride created with ID: ${ride._id}, OTP: ${otp}`);

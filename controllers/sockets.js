@@ -96,6 +96,10 @@ const handleSocketConnection = (io) => {
     const user = socket.user;
     console.log(`👤 User Joined: ${user.id} (${user.role}) - Socket ID: ${socket.id}`);
     
+    // Join user-specific room for targeted notifications (like account disapproval)
+    socket.join(`user_${user.id}`);
+    console.log(`🏠 User ${user.id} joined room: user_${user.id}`);
+    
     // Log all registered event listeners for debugging
     console.log(`📋 Registering socket events for ${user.role}...`);
 
@@ -319,7 +323,7 @@ const handleSocketConnection = (io) => {
             return socket.emit("error", { message: "Driver ID is required" });
           }
           
-          const driver = await User.findById(riderId).select("firstName lastName phone licenseId photo vehicleType _id");
+          const driver = await User.findById(riderId).select("firstName lastName phone licenseId photo vehicleType plateNumber _id");
           
           if (!driver) {
             return socket.emit("error", { message: "Driver not found" });
@@ -343,6 +347,7 @@ const handleSocketConnection = (io) => {
             lastName: driver.lastName,
             phone: driver.phone,
             licenseId: driver.licenseId,
+            plateNumber: driver.plateNumber || null,
             photo: driver.photo || null,
             averageRating: averageRating,
             totalRatings: totalRatings,
@@ -1183,7 +1188,7 @@ const handleSocketConnection = (io) => {
             }
             
             // Get rider's info from database
-            const riderInfo = await User.findById(riderId).select("firstName lastName photo vehicleType");
+            const riderInfo = await User.findById(riderId).select("firstName lastName photo vehicleType plateNumber licenseId phone");
             
             // Calculate distance in meters
             const distance = geolib.getDistance(
@@ -1208,6 +1213,9 @@ const handleSocketConnection = (io) => {
               firstName: riderInfo?.firstName || "",
               lastName: riderInfo?.lastName || "",
               photo: riderInfo?.photo || null,
+              phone: riderInfo?.phone || null,
+              plateNumber: riderInfo?.plateNumber || null,
+              licenseId: riderInfo?.licenseId || null,
               distance: distance,
               averageRating: parseFloat(averageRating.toFixed(1)),
               totalRatings: totalRatings,
@@ -1346,5 +1354,11 @@ export const broadcastRideAccepted = (io, rideId) => {
   console.log(`Broadcasting ride accepted: ${rideId}`);
   io.to("onDuty").emit("rideAccepted", rideId);
 };
+
+// Export getDistanceRadiusInMeters for use in ride controller (distance validation)
+export { getDistanceRadiusInMeters };
+
+// Export onDutyRiders map for distance validation in ride acceptance
+export const getOnDutyRiders = () => onDutyRiders;
 
 export default handleSocketConnection;

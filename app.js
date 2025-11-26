@@ -105,6 +105,56 @@ app.get('/debug/rooms', (req, res) => {
   });
 });
 
+// DEBUG: Test endpoint to trigger disapproval event for a user
+app.post('/debug/test-disapproval/:userId', async (req, res) => {
+  const { userId } = req.params;
+  const { reason } = req.body;
+  
+  console.log(`\n🧪🧪🧪 TEST DISAPPROVAL TRIGGER 🧪🧪🧪`);
+  console.log(`Target user: ${userId}`);
+  console.log(`Reason: ${reason || 'Test disapproval'}`);
+  
+  try {
+    const sockets = await req.io.fetchSockets();
+    console.log(`📊 Total connected sockets: ${sockets.length}`);
+    
+    // Log all connected users
+    sockets.forEach((s, index) => {
+      console.log(`  Socket ${index + 1}: ID=${s.id}, User=${s.user?.id}, Role=${s.user?.role}, Rooms=${Array.from(s.rooms).join(', ')}`);
+    });
+    
+    const disapprovalPayload = {
+      reason: reason || 'Test disapproval - Your account has been disapproved',
+      timestamp: new Date().toISOString()
+    };
+    
+    // Emit to user room
+    console.log(`📢 Emitting to room user_${userId}`);
+    req.io.to(`user_${userId}`).emit('accountDisapproved', disapprovalPayload);
+    
+    // Also emit to all matching sockets directly
+    const matchingSockets = sockets.filter(s => s.user?.id?.toString() === userId);
+    console.log(`🔍 Found ${matchingSockets.length} direct sockets for user ${userId}`);
+    matchingSockets.forEach((s, index) => {
+      console.log(`  Emitting directly to socket ${index + 1}: ${s.id}`);
+      s.emit('accountDisapproved', disapprovalPayload);
+    });
+    
+    console.log(`🧪🧪🧪 TEST DISAPPROVAL COMPLETE 🧪🧪🧪\n`);
+    
+    res.json({
+      success: true,
+      message: `Disapproval event sent to user ${userId}`,
+      connectedSockets: sockets.length,
+      matchingSocketsFound: matchingSockets.length,
+      payload: disapprovalPayload
+    });
+  } catch (error) {
+    console.error('Error in test disapproval:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Debug endpoint to check searching rides
 app.get('/debug/rides', async (req, res) => {
   try {

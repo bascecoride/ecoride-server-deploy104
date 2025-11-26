@@ -17,6 +17,7 @@ const rideSchema = new Schema(
       address: { type: String, required: true },
       latitude: { type: Number, required: true },
       longitude: { type: Number, required: true },
+      landmark: { type: String, default: null }, // Landmark description to help driver find pickup location
     },
     drop: {
       address: { type: String, required: true },

@@ -265,21 +265,57 @@ export const disapproveUser = async (req, res) => {
       try {
         // Find all sockets for this user and emit disapproval event
         const sockets = await req.io.fetchSockets();
-        const userSocket = sockets.find(s => s.user?.id === id);
+        const userId = id.toString(); // Ensure string comparison
         
+        console.log(`\n🚨🚨🚨 DISAPPROVAL SOCKET EMISSION START 🚨🚨🚨`);
+        console.log(`🔍 Looking for socket for user ${userId}`);
+        console.log(`📊 Total connected sockets: ${sockets.length}`);
+        
+        // Log all connected users for debugging
+        sockets.forEach((s, index) => {
+          console.log(`  Socket ${index + 1}: ID=${s.id}, User=${s.user?.id}, Role=${s.user?.role}`);
+        });
+        
+        const disapprovalPayload = {
+          reason: reason || 'Your account has been disapproved by an administrator',
+          timestamp: new Date().toISOString()
+        };
+        
+        console.log(`📦 Disapproval payload:`, JSON.stringify(disapprovalPayload));
+        
+        // Find socket with matching user ID (compare as strings)
+        const userSocket = sockets.find(s => s.user?.id?.toString() === userId);
+        
+        // ALWAYS emit to both direct socket AND room for maximum reliability
         if (userSocket) {
-          console.log(`🔔 Emitting accountDisapproved event to user ${id} (socket: ${userSocket.id})`);
-          userSocket.emit('accountDisapproved', {
-            reason: reason || 'Your account has been disapproved by an administrator',
-            timestamp: new Date().toISOString()
-          });
+          console.log(`🔔 Emitting accountDisapproved event DIRECTLY to user ${userId} (socket: ${userSocket.id})`);
+          userSocket.emit('accountDisapproved', disapprovalPayload);
+          console.log(`✅ Direct socket emission completed`);
         } else {
-          console.log(`⚠️ User ${id} is not currently connected via socket`);
+          console.log(`⚠️ User ${userId} is not currently connected via direct socket lookup`);
         }
+        
+        // ALWAYS also broadcast to user-specific room as backup
+        console.log(`📢 Broadcasting accountDisapproved to room user_${userId}`);
+        req.io.to(`user_${userId}`).emit('accountDisapproved', disapprovalPayload);
+        console.log(`✅ Room broadcast completed`);
+        
+        // Also try emitting to all sockets that match the user ID
+        const matchingSockets = sockets.filter(s => s.user?.id?.toString() === userId);
+        console.log(`🔍 Found ${matchingSockets.length} sockets for user ${userId}`);
+        matchingSockets.forEach((s, index) => {
+          console.log(`  Emitting to socket ${index + 1}: ${s.id}`);
+          s.emit('accountDisapproved', disapprovalPayload);
+        });
+        
+        console.log(`🚨🚨🚨 DISAPPROVAL SOCKET EMISSION END 🚨🚨🚨\n`);
       } catch (socketError) {
         console.error(`⚠️ Error emitting disapproval socket event:`, socketError.message);
+        console.error(socketError);
         // Don't fail the request if socket emission fails
       }
+    } else {
+      console.log(`⚠️ req.io is not available - socket events cannot be emitted`);
     }
     
     res.status(StatusCodes.OK).json({
