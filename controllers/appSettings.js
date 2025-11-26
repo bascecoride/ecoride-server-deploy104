@@ -8,7 +8,7 @@ import { invalidateDistanceRadiusCache } from "./sockets.js";
 const getAdminName = async (adminId) => {
   try {
     const admin = await Admin.findById(adminId);
-    return admin ? `${admin.firstName} ${admin.lastName}` : 'Unknown Admin';
+    return admin ? admin.name : 'Unknown Admin';
   } catch (error) {
     return 'Unknown Admin';
   }
