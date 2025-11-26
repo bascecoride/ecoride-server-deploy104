@@ -1,6 +1,18 @@
 import TermsAndConditions from "../models/TermsAndConditions.js";
 import { StatusCodes } from "http-status-codes";
 import { BadRequestError, NotFoundError } from "../errors/index.js";
+import ActivityLog from "../models/ActivityLog.js";
+import Admin from "../models/Admin.js";
+
+// Helper function to get admin name
+const getAdminName = async (adminId) => {
+  try {
+    const admin = await Admin.findById(adminId);
+    return admin ? `${admin.firstName} ${admin.lastName}` : 'Unknown Admin';
+  } catch (error) {
+    return 'Unknown Admin';
+  }
+};
 
 // Get active terms and conditions (public - no auth required)
 export const getActiveTerms = async (req, res) => {
@@ -74,11 +86,16 @@ export const getAllTerms = async (req, res) => {
 // Create or update terms and conditions (admin only)
 export const updateTerms = async (req, res) => {
   try {
-    const { content, version } = req.body;
+    const { content, version, isReset } = req.body;
+    const adminId = req.user.userId;
     
     if (!content || !content.trim()) {
       throw new BadRequestError("Terms and conditions content is required");
     }
+    
+    // Get old version for logging
+    const oldTerms = await TermsAndConditions.findOne({ isActive: true });
+    const oldVersion = oldTerms?.version || 'None';
     
     // Deactivate all existing terms
     await TermsAndConditions.updateMany({}, { isActive: false });
@@ -88,14 +105,43 @@ export const updateTerms = async (req, res) => {
       content: content.trim(),
       version: version || "1.0",
       lastUpdated: new Date(),
-      updatedBy: req.user.userId,
+      updatedBy: adminId,
       isActive: true,
     });
     
     const populatedTerms = await TermsAndConditions.findById(newTerms._id)
       .populate("updatedBy", "firstName lastName email");
     
-    console.log(`✅ Terms and conditions updated by admin ${req.user.userId}`);
+    // Log activity
+    try {
+      const adminName = await getAdminName(adminId);
+      const action = isReset ? 'RESET_TERMS' : 'UPDATED_TERMS';
+      const description = isReset 
+        ? `Reset Terms and Conditions to default (Version ${version || '1.0'})`
+        : `Updated Terms and Conditions from Version ${oldVersion} to Version ${version || '1.0'}`;
+      
+      await ActivityLog.create({
+        admin: adminId,
+        adminName: adminName,
+        action: action,
+        targetType: 'TERMS',
+        targetId: newTerms._id,
+        targetName: 'Terms and Conditions',
+        description: description,
+        metadata: {
+          oldVersion: oldVersion,
+          newVersion: version || '1.0',
+          isReset: isReset || false,
+          contentLength: content.trim().length
+        },
+        ipAddress: req.ip
+      });
+      console.log(`📝 Activity logged: ${action} by ${adminName}`);
+    } catch (logError) {
+      console.error('⚠️ Failed to log activity (non-critical):', logError.message);
+    }
+    
+    console.log(`✅ Terms and conditions updated by admin ${adminId}`);
     
     res.status(StatusCodes.OK).json({
       message: "Terms and conditions updated successfully",

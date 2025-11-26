@@ -27,13 +27,21 @@ const activityLogSchema = new Schema(
         'UPDATED_ADMIN',
         'DELETED_ADMIN',
         'DEACTIVATED_ADMIN',
-        'ACTIVATED_ADMIN'
+        'ACTIVATED_ADMIN',
+        // Settings-related actions
+        'UPDATED_FARE_RATE',
+        'RESET_FARE_RATES',
+        'UPDATED_TERMS',
+        'RESET_TERMS',
+        'UPDATED_DISTANCE_RADIUS',
+        'RESET_DISTANCE_RADIUS',
+        'UPDATED_SETTING'
       ]
     },
     targetType: {
       type: String,
       required: true,
-      enum: ['USER', 'ADMIN', 'RIDE']
+      enum: ['USER', 'ADMIN', 'RIDE', 'SETTING', 'FARE_RATE', 'TERMS']
     },
     targetId: {
       type: Schema.Types.ObjectId,

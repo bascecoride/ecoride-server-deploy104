@@ -1,6 +1,18 @@
 import FareRate from '../models/FareRate.js';
 import { StatusCodes } from 'http-status-codes';
 import { BadRequestError, NotFoundError } from '../errors/index.js';
+import ActivityLog from '../models/ActivityLog.js';
+import Admin from '../models/Admin.js';
+
+// Helper function to get admin name
+const getAdminName = async (adminId) => {
+  try {
+    const admin = await Admin.findById(adminId);
+    return admin ? `${admin.firstName} ${admin.lastName}` : 'Unknown Admin';
+  } catch (error) {
+    return 'Unknown Admin';
+  }
+};
 
 // Get all fare rates
 export const getAllFareRates = async (req, res) => {
@@ -107,7 +119,7 @@ export const updateFareRate = async (req, res) => {
 // Bulk update all fare rates
 export const bulkUpdateFareRates = async (req, res) => {
   try {
-    const { fareRates } = req.body;
+    const { fareRates, isReset } = req.body;
     const adminId = req.user.id;
     
     if (!Array.isArray(fareRates) || fareRates.length === 0) {
@@ -115,6 +127,7 @@ export const bulkUpdateFareRates = async (req, res) => {
     }
     
     const updatedRates = [];
+    const changeDetails = [];
     
     for (const rate of fareRates) {
       const { vehicleType, minimumRate, perKmRate } = rate;
@@ -124,6 +137,8 @@ export const bulkUpdateFareRates = async (req, res) => {
       if (minimumRate < 0 || perKmRate < 0) continue;
       
       let fareRate = await FareRate.findOne({ vehicleType });
+      const oldMinRate = fareRate?.minimumRate || 0;
+      const oldPerKmRate = fareRate?.perKmRate || 0;
       
       if (!fareRate) {
         fareRate = await FareRate.create({
@@ -132,7 +147,11 @@ export const bulkUpdateFareRates = async (req, res) => {
           perKmRate,
           updatedBy: adminId,
         });
+        changeDetails.push(`${vehicleType}: Created with ₱${minimumRate} min, ₱${perKmRate}/km`);
       } else {
+        if (oldMinRate !== minimumRate || oldPerKmRate !== perKmRate) {
+          changeDetails.push(`${vehicleType}: ₱${oldMinRate}→₱${minimumRate} min, ₱${oldPerKmRate}→₱${perKmRate}/km`);
+        }
         fareRate.minimumRate = minimumRate;
         fareRate.perKmRate = perKmRate;
         fareRate.updatedBy = adminId;
@@ -141,6 +160,33 @@ export const bulkUpdateFareRates = async (req, res) => {
       
       await fareRate.populate('updatedBy', 'firstName lastName email');
       updatedRates.push(fareRate);
+    }
+    
+    // Log activity
+    try {
+      const adminName = await getAdminName(adminId);
+      const action = isReset ? 'RESET_FARE_RATES' : 'UPDATED_FARE_RATE';
+      const description = isReset 
+        ? `Reset all fare rates to default values: ${changeDetails.join('; ')}`
+        : `Updated fare rates: ${changeDetails.join('; ')}`;
+      
+      await ActivityLog.create({
+        admin: adminId,
+        adminName: adminName,
+        action: action,
+        targetType: 'FARE_RATE',
+        targetId: updatedRates[0]?._id || adminId, // Use first rate ID or admin ID as fallback
+        targetName: 'Fare Rates',
+        description: description,
+        metadata: {
+          updatedRates: fareRates,
+          isReset: isReset || false
+        },
+        ipAddress: req.ip
+      });
+      console.log(`📝 Activity logged: ${action} by ${adminName}`);
+    } catch (logError) {
+      console.error('⚠️ Failed to log activity (non-critical):', logError.message);
     }
     
     console.log(`✅ Bulk fare rates updated by admin ${adminId}`);

@@ -1,7 +1,18 @@
 import { StatusCodes } from "http-status-codes";
 import AppSettings from "../models/AppSettings.js";
 import ActivityLog from "../models/ActivityLog.js";
+import Admin from "../models/Admin.js";
 import { invalidateDistanceRadiusCache } from "./sockets.js";
+
+// Helper function to get admin name
+const getAdminName = async (adminId) => {
+  try {
+    const admin = await Admin.findById(adminId);
+    return admin ? `${admin.firstName} ${admin.lastName}` : 'Unknown Admin';
+  } catch (error) {
+    return 'Unknown Admin';
+  }
+};
 
 // Get all app settings
 export const getAllSettings = async (req, res) => {
@@ -75,7 +86,7 @@ export const updateSetting = async (req, res) => {
     console.log("📝 Update setting request:", req.body);
     console.log("👤 User info:", req.user);
     
-    const { settingKey, value, description } = req.body;
+    const { settingKey, value, description, isReset } = req.body;
     const adminId = req.user?.userId || req.user?.id;
     
     console.log("📝 Parsed values - settingKey:", settingKey, "value:", value, "adminId:", adminId);
@@ -103,6 +114,10 @@ export const updateSetting = async (req, res) => {
       }
     }
 
+    // Get old value for logging
+    const oldSetting = await AppSettings.findOne({ settingKey });
+    const oldValue = oldSetting?.value || 'None';
+
     // Update or create setting
     const setting = await AppSettings.findOneAndUpdate(
       { settingKey },
@@ -118,18 +133,39 @@ export const updateSetting = async (req, res) => {
       }
     ).populate("updatedBy", "firstName lastName email");
 
-    // Log activity (optional - don't fail if logging fails)
+    // Log activity with proper format
     try {
       if (adminId) {
+        const adminName = await getAdminName(adminId);
+        let action, logDescription;
+        
+        if (settingKey === "DISTANCE_RADIUS") {
+          action = isReset ? 'RESET_DISTANCE_RADIUS' : 'UPDATED_DISTANCE_RADIUS';
+          logDescription = isReset 
+            ? `Reset Distance Radius to default (${value} km)`
+            : `Updated Distance Radius from ${oldValue} km to ${value} km`;
+        } else {
+          action = 'UPDATED_SETTING';
+          logDescription = `Updated ${settingKey} from ${oldValue} to ${value}`;
+        }
+        
         await ActivityLog.create({
           admin: adminId,
-          action: "UPDATE_SETTING",
-          targetModel: "AppSettings",
+          adminName: adminName,
+          action: action,
+          targetType: 'SETTING',
           targetId: setting._id,
-          details: `Updated ${settingKey} to ${value} km`,
-          ipAddress: req.ip,
-          userAgent: req.get("user-agent"),
+          targetName: settingKey === "DISTANCE_RADIUS" ? 'Distance Radius' : settingKey,
+          description: logDescription,
+          metadata: {
+            settingKey: settingKey,
+            oldValue: oldValue,
+            newValue: value,
+            isReset: isReset || false
+          },
+          ipAddress: req.ip
         });
+        console.log(`📝 Activity logged: ${action} by ${adminName}`);
       }
     } catch (logError) {
       console.error("⚠️ Failed to log activity (non-critical):", logError.message);
