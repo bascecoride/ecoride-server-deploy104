@@ -203,33 +203,59 @@ const handleSocketConnection = (io) => {
         updateNearbyriders();
       });
 
-      socket.on("updateLocation", (coords) => {
+      socket.on("updateLocation", async (coords) => {
+        // Validate coordinates before updating
+        if (!coords || typeof coords.latitude !== 'number' || typeof coords.longitude !== 'number') {
+          console.warn(`⚠️ Rider ${user.id} sent invalid location update:`, coords);
+          return;
+        }
+        
+        const validCoords = {
+          latitude: parseFloat(coords.latitude),
+          longitude: parseFloat(coords.longitude),
+          heading: coords.heading || 0
+        };
+        
+        if (isNaN(validCoords.latitude) || isNaN(validCoords.longitude)) {
+          console.warn(`⚠️ Rider ${user.id} location update has NaN values:`, validCoords);
+          return;
+        }
+        
+        // Check if rider is in the onDuty room but not in the Map (race condition fix)
+        const isInOnDutyRoom = socket.rooms.has('onDuty');
+        
         if (onDutyRiders.has(user.id)) {
-          // Validate coordinates before updating
-          if (!coords || typeof coords.latitude !== 'number' || typeof coords.longitude !== 'number') {
-            console.warn(`⚠️ Rider ${user.id} sent invalid location update:`, coords);
-            return;
-          }
-          
-          const validCoords = {
-            latitude: parseFloat(coords.latitude),
-            longitude: parseFloat(coords.longitude),
-            heading: coords.heading || 0
-          };
-          
-          if (isNaN(validCoords.latitude) || isNaN(validCoords.longitude)) {
-            console.warn(`⚠️ Rider ${user.id} location update has NaN values:`, validCoords);
-            return;
-          }
-          
+          // Normal case: rider is in the Map, just update coords
           onDutyRiders.get(user.id).coords = validCoords;
           console.log(`📍 Rider ${user.id} updated location: (${validCoords.latitude}, ${validCoords.longitude})`);
-          updateNearbyriders();
-          socket.to(`rider_${user.id}`).emit("riderLocationUpdate", {
-            riderId: user.id,
+        } else if (isInOnDutyRoom) {
+          // Race condition case: rider is in onDuty room but not in Map
+          // Re-register them in the Map
+          console.log(`🔄 Rider ${user.id} is in onDuty room but not in Map - re-registering...`);
+          
+          // Get rider info from database
+          const riderInfo = await User.findById(user.id).select("vehicleType firstName lastName");
+          
+          onDutyRiders.set(user.id, { 
+            socketId: socket.id, 
             coords: validCoords,
+            riderId: user.id,
+            vehicleType: riderInfo?.vehicleType || "Tricycle",
+            name: `${riderInfo?.firstName || ''} ${riderInfo?.lastName || ''}`
           });
+          
+          console.log(`✅ Rider ${user.id} re-registered in onDutyRiders Map with vehicle: ${riderInfo?.vehicleType || "Tricycle"}`);
+        } else {
+          // Rider is not on duty at all - ignore the update
+          console.log(`⚠️ Rider ${user.id} sent location update but is not on duty - ignoring`);
+          return;
         }
+        
+        updateNearbyriders();
+        socket.to(`rider_${user.id}`).emit("riderLocationUpdate", {
+          riderId: user.id,
+          coords: validCoords,
+        });
       });
 
       // Handle request for all searching rides (city-wide)
@@ -238,10 +264,22 @@ const handleSocketConnection = (io) => {
           console.log(`🔍 Rider ${user.id} requesting all searching rides`);
           
           // Get rider's vehicle type from database
-          const User = (await import('../models/User.js')).default;
-          const riderUser = await User.findById(user.id).select('vehicleType');
+          const riderUser = await User.findById(user.id).select('vehicleType firstName lastName');
           const vehicleType = riderUser?.vehicleType || "Single Motorcycle";
           console.log(`🚗 Rider ${user.id} vehicle type: ${vehicleType}`);
+          
+          // RACE CONDITION FIX: Ensure rider is properly registered in onDutyRiders Map
+          // This handles the case where rider is in onDuty room but not in the Map
+          const isInOnDutyRoom = socket.rooms.has('onDuty');
+          const isInMap = onDutyRiders.has(user.id);
+          
+          if (isInOnDutyRoom && !isInMap) {
+            console.log(`🔄 Rider ${user.id} is in onDuty room but not in Map during requestAllSearchingRides - requesting location sync`);
+            socket.emit("requestLocationSync", { 
+              message: "Please sync your location to receive ride requests",
+              reason: "map_registration_missing"
+            });
+          }
           
           // Find ALL rides with SEARCHING_FOR_RIDER status (NO vehicle filter - client will handle visual feedback)
           // Only rides with SEARCHING_FOR_RIDER status (cancelled/timeout rides have different status)
@@ -1141,8 +1179,34 @@ const handleSocketConnection = (io) => {
     // ============ END GLOBAL RIDE CANCELLATION ============
 
     socket.on("disconnect", () => {
-      if (user.role === "rider") onDutyRiders.delete(user.id);
-      console.log(`${user.role} ${user.id} disconnected.`);
+      console.log(`${user.role} ${user.id} disconnected (socket: ${socket.id}).`);
+      
+      if (user.role === "rider") {
+        // RACE CONDITION FIX: Add a delay before removing rider from Map
+        // This gives the socket a chance to reconnect (e.g., during brief network issues)
+        // If the rider reconnects within 5 seconds, they won't be removed from the Map
+        const disconnectDelay = 5000; // 5 seconds
+        
+        console.log(`⏳ Rider ${user.id} will be removed from onDutyRiders in ${disconnectDelay/1000}s if not reconnected`);
+        
+        setTimeout(() => {
+          // Check if the rider has reconnected with a new socket
+          const currentRiderData = onDutyRiders.get(user.id);
+          
+          if (currentRiderData && currentRiderData.socketId === socket.id) {
+            // The rider hasn't reconnected (same socket ID), remove them
+            onDutyRiders.delete(user.id);
+            console.log(`🚫 Rider ${user.id} removed from onDutyRiders after disconnect timeout`);
+            updateNearbyriders();
+          } else if (currentRiderData) {
+            // The rider has reconnected with a new socket, don't remove
+            console.log(`✅ Rider ${user.id} reconnected with new socket ${currentRiderData.socketId} - keeping in onDutyRiders`);
+          } else {
+            // Rider was already removed (e.g., went off duty)
+            console.log(`ℹ️ Rider ${user.id} was already removed from onDutyRiders`);
+          }
+        }, disconnectDelay);
+      }
     });
 
     function updateNearbyriders() {

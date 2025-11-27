@@ -50,9 +50,42 @@ export const acceptRide = async (req, res) => {
     // ============================================
     // Get rider's current location from on-duty riders map
     const onDutyRiders = getOnDutyRiders();
-    const riderData = onDutyRiders.get(riderId);
+    let riderData = onDutyRiders.get(riderId);
     
+    // If rider is not in the Map, try to find their socket and re-register them
+    // This handles the race condition where socket briefly disconnected during cancellation
     if (!riderData || !riderData.coords) {
+      console.log(`⚠️ Rider ${riderId} not found in onDutyRiders Map - attempting recovery...`);
+      
+      // Try to find the rider's socket
+      if (req.io) {
+        const riderSocket = [...req.io.sockets.sockets.values()].find(
+          socket => socket.user?.id === riderId && socket.user?.role === 'rider'
+        );
+        
+        if (riderSocket) {
+          console.log(`🔄 Found rider socket ${riderSocket.id} - checking if they should be on duty`);
+          
+          // Check if rider is in the onDuty room
+          const isInOnDutyRoom = riderSocket.rooms.has('onDuty');
+          console.log(`🔍 Rider ${riderId} is in onDuty room: ${isInOnDutyRoom}`);
+          
+          if (isInOnDutyRoom) {
+            // Rider is in the room but not in the Map - this is the race condition
+            // Emit an event to ask the rider to re-send their location
+            console.log(`🔄 Rider ${riderId} is in onDuty room but not in Map - requesting location re-sync`);
+            riderSocket.emit("requestLocationSync", { 
+              message: "Please re-sync your location to accept rides",
+              reason: "location_sync_required"
+            });
+            
+            throw new BadRequestError(
+              "Your location data needs to sync. Please wait a moment and try again, or toggle your duty status off and on."
+            );
+          }
+        }
+      }
+      
       console.log(`❌ Rider ${riderId} is not on duty or has no location data`);
       throw new BadRequestError("You must be on duty with a valid location to accept rides. Please go on duty first.");
     }
@@ -544,6 +577,18 @@ export const createRide = async (req, res) => {
 
   if (!vehicle || !pickup || !drop) {
     throw new BadRequestError("Vehicle, pickup, and drop locations are required.");
+  }
+
+  // Validate pickup coordinates
+  if (!pickup.latitude || !pickup.longitude || isNaN(pickup.latitude) || isNaN(pickup.longitude)) {
+    console.log("❌ Invalid pickup coordinates:", pickup);
+    throw new BadRequestError("Invalid pickup location. Please select a valid pickup address.");
+  }
+
+  // Validate drop coordinates
+  if (!drop.latitude || !drop.longitude || isNaN(drop.latitude) || isNaN(drop.longitude)) {
+    console.log("❌ Invalid drop coordinates:", drop);
+    throw new BadRequestError("Invalid drop location. Please select a valid destination address.");
   }
 
   // Validate passenger count based on vehicle type
