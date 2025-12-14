@@ -546,18 +546,29 @@ export const updatePaymentMethod = async (req, res) => {
 
     // Notify rider about payment method selection
     if (req.io && ride.rider) {
+      const paymentData = {
+        rideId: rideId,
+        paymentMethod: paymentMethod,
+        customerName: `${ride.customer.firstName} ${ride.customer.lastName}`,
+        fare: ride.fare
+      };
+      
+      // Emit to ride room for redundancy
+      console.log(`📢 Broadcasting payment method to ride room: ride_${rideId}`);
+      req.io.to(`ride_${rideId}`).emit("paymentMethodSelected", paymentData);
+      req.io.to(`ride_${rideId}`).emit("rideUpdate", ride);
+      
+      // Also directly notify the rider socket
       const riderSocket = [...req.io.sockets.sockets.values()].find(
         socket => socket.user?.id === ride.rider._id.toString()
       );
       
       if (riderSocket) {
-        console.log(`📢 Notifying rider ${ride.rider._id} about payment method: ${paymentMethod}`);
-        riderSocket.emit("paymentMethodSelected", {
-          rideId: rideId,
-          paymentMethod: paymentMethod,
-          customerName: `${ride.customer.firstName} ${ride.customer.lastName}`,
-          fare: ride.fare
-        });
+        console.log(`📢 Directly notifying rider ${ride.rider._id} about payment method: ${paymentMethod}`);
+        riderSocket.emit("paymentMethodSelected", paymentData);
+        riderSocket.emit("rideUpdate", ride);
+      } else {
+        console.log(`⚠️ Rider socket not found for rider ${ride.rider._id}, relying on room broadcast`);
       }
     }
 
