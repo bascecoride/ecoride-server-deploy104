@@ -124,7 +124,9 @@ export const register = async (req, res) => {
     orCr,
     vehicleType,
     plateNumber,
-    agreedToTerms
+    agreedToTerms,
+    isPWD,
+    pwdCardDocument
   } = req.body;
 
   if (!email || !password) {
@@ -241,7 +243,11 @@ export const register = async (req, res) => {
       approved: false, // Ensure all new users start as unapproved
       status: "pending",
       agreedToTerms: true,
-      termsAgreedAt: new Date()
+      termsAgreedAt: new Date(),
+      // PWD fields
+      isPWD: isPWD || false,
+      pwdCardDocument: pwdCardDocument || null,
+      pwdVerified: false // PWD status needs admin verification
     });
 
     await user.save();

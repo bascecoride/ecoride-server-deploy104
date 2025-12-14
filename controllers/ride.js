@@ -624,8 +624,40 @@ export const createRide = async (req, res) => {
     
     // Calculate fare based on vehicle type and distance
     const fareOptions = await calculateFare(distance);
-    const fare = fareOptions[vehicle];
-    console.log(`💰 Fare calculated: ${fare} for ${vehicle}`);
+    let fare = fareOptions[vehicle];
+    console.log(`💰 Base fare calculated: ${fare} for ${vehicle}`);
+
+    // Check if customer is a verified PWD and apply discount
+    const User = (await import('../models/User.js')).default;
+    const AppSettings = (await import('../models/AppSettings.js')).default;
+    const customer = await User.findById(customerId);
+    
+    let isPWDRide = false;
+    let pwdDiscountPercentage = 0;
+    let originalFare = fare;
+    let discountAmount = 0;
+    
+    if (customer && customer.isPWD && customer.pwdVerified) {
+      // Get PWD discount from settings
+      let pwdSetting = await AppSettings.findOne({ settingKey: "PWD_DISCOUNT" });
+      if (!pwdSetting) {
+        // Create default if not exists
+        pwdSetting = await AppSettings.create({
+          settingKey: "PWD_DISCOUNT",
+          value: 25,
+          unit: "%",
+          description: "Discount percentage for verified PWD passengers"
+        });
+      }
+      
+      pwdDiscountPercentage = pwdSetting.value;
+      discountAmount = Math.round(fare * (pwdDiscountPercentage / 100));
+      fare = fare - discountAmount;
+      isPWDRide = true;
+      
+      console.log(`♿ PWD Discount Applied: ${pwdDiscountPercentage}% (₱${discountAmount} off)`);
+      console.log(`💰 Final fare after PWD discount: ₱${fare} (Original: ₱${originalFare})`);
+    }
 
     // Generate OTP
     const otp = generateOTP(); // Fixed: Use correct function name
@@ -648,6 +680,11 @@ export const createRide = async (req, res) => {
       otp,
       passengerCount: requestedPassengers, // Number of passengers joining the ride
       status: "SEARCHING_FOR_RIDER",
+      // PWD discount fields
+      isPWDRide,
+      pwdDiscountPercentage,
+      originalFare: isPWDRide ? originalFare : null,
+      discountAmount,
     });
     
     console.log(`👥 Passenger count: ${requestedPassengers}`);

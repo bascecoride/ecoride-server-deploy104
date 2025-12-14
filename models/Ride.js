@@ -88,6 +88,23 @@ const rideSchema = new Schema(
       type: Date,
       default: null,
     },
+    // PWD Discount fields
+    isPWDRide: {
+      type: Boolean,
+      default: false,
+    },
+    pwdDiscountPercentage: {
+      type: Number,
+      default: 0,
+    },
+    originalFare: {
+      type: Number,
+      default: null,
+    },
+    discountAmount: {
+      type: Number,
+      default: 0,
+    },
   },
   {
     timestamps: true,

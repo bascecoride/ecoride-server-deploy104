@@ -137,7 +137,20 @@ const userSchema = new Schema(
     termsAgreedAt: {
       type: Date,
       required: false,
-    }
+    },
+    // PWD (Person with Disability) fields
+    isPWD: {
+      type: Boolean,
+      default: false,
+    },
+    pwdCardDocument: {
+      type: String,
+      required: false,
+    },
+    pwdVerified: {
+      type: Boolean,
+      default: false,
+    },
   },
   {
     timestamps: true,

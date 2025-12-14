@@ -7,7 +7,8 @@ import {
   updateUser, 
   deleteUser,
   addPenaltyComment,
-  getAllRides 
+  getAllRides,
+  verifyPWD
 } from '../controllers/admin.js';
 import authenticateUser from '../middleware/authentication.js';
 
@@ -37,6 +38,7 @@ router.get('/users/:id', getUserById);
 router.put('/users/:id/approve', approveUser);
 router.put('/users/:id/disapprove', disapproveUser);
 router.put('/users/:id/penalty', addPenaltyComment);
+router.put('/users/:id/verify-pwd', verifyPWD);
 router.put('/users/:id', updateUser);
 router.delete('/users/:id', deleteUser);
 

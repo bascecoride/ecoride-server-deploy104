@@ -8,7 +8,7 @@ const appSettingsSchema = new Schema(
       type: String,
       required: true,
       unique: true,
-      enum: ["DISTANCE_RADIUS"], // Can add more settings in the future
+      enum: ["DISTANCE_RADIUS", "PWD_DISCOUNT"], // Can add more settings in the future
     },
     value: {
       type: Number,

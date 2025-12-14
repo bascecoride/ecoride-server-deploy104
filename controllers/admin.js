@@ -709,3 +709,66 @@ export const getAllRides = async (req, res) => {
     });
   }
 };
+
+// Verify or revoke PWD status
+export const verifyPWD = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { pwdVerified } = req.body;
+    
+    console.log(`${pwdVerified ? 'Verifying' : 'Revoking'} PWD status for user: ${id}`);
+    
+    const user = await User.findById(id);
+    
+    if (!user) {
+      throw new NotFoundError(`No user found with id ${id}`);
+    }
+    
+    // Check if user has claimed PWD status
+    if (!user.isPWD) {
+      return res.status(StatusCodes.BAD_REQUEST).json({
+        message: 'User has not claimed PWD status'
+      });
+    }
+    
+    // Update PWD verification status
+    user.pwdVerified = pwdVerified;
+    await user.save();
+    
+    // Log the activity
+    await logActivity(
+      req.user?.id || 'system',
+      pwdVerified ? 'VERIFY_PWD' : 'REVOKE_PWD',
+      `${pwdVerified ? 'Verified' : 'Revoked'} PWD status for user: ${user.firstName} ${user.lastName} (${user.email})`,
+      user._id
+    );
+    
+    console.log(`PWD status ${pwdVerified ? 'verified' : 'revoked'} for user: ${user.email}`);
+    
+    res.status(StatusCodes.OK).json({
+      message: `PWD status ${pwdVerified ? 'verified' : 'revoked'} successfully`,
+      user: {
+        _id: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        role: user.role,
+        status: user.status,
+        isPWD: user.isPWD,
+        pwdVerified: user.pwdVerified,
+        pwdCardDocument: user.pwdCardDocument
+      }
+    });
+  } catch (error) {
+    console.error(`Error updating PWD status for user ${req.params.id}:`, error);
+    
+    if (error.name === 'NotFoundError') {
+      return res.status(StatusCodes.NOT_FOUND).json({ message: error.message });
+    }
+    
+    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ 
+      message: 'Error updating PWD status',
+      error: error.message
+    });
+  }
+};

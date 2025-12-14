@@ -38,7 +38,8 @@ router.post('/upload-documents', upload.fields([
   { name: 'staffFacultyIdDocument', maxCount: 1 },
   { name: 'cor', maxCount: 1 },
   { name: 'driverLicense', maxCount: 1 },
-  { name: 'orCr', maxCount: 1 }
+  { name: 'orCr', maxCount: 1 },
+  { name: 'pwdCardDocument', maxCount: 1 } // PWD Card for disability verification
 ]), uploadDocuments); // Upload verification documents
 
 // Special admin login endpoint (legacy - for User model admins)

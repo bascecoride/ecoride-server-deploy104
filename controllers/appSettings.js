@@ -80,6 +80,36 @@ export const getDistanceRadius = async (req, res) => {
   }
 };
 
+// Get PWD discount setting (public endpoint for mobile app)
+export const getPWDDiscount = async (req, res) => {
+  try {
+    let setting = await AppSettings.findOne({ settingKey: "PWD_DISCOUNT" });
+    
+    // If setting doesn't exist, create default (25% discount)
+    if (!setting) {
+      setting = await AppSettings.create({
+        settingKey: "PWD_DISCOUNT",
+        value: 25,
+        unit: "%",
+        description: "Discount percentage for verified PWD passengers"
+      });
+      console.log("✅ Created default PWD discount setting: 25%");
+    }
+    
+    res.status(StatusCodes.OK).json({ 
+      pwdDiscount: setting.value,
+      unit: setting.unit,
+      percentage: setting.value
+    });
+  } catch (error) {
+    console.error("Error fetching PWD discount:", error);
+    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ 
+      message: "Failed to fetch PWD discount",
+      error: error.message 
+    });
+  }
+};
+
 // Update or create setting (Admin only)
 export const updateSetting = async (req, res) => {
   try {
@@ -114,6 +144,15 @@ export const updateSetting = async (req, res) => {
       }
     }
 
+    // For PWD discount, validate reasonable range (0% to 100%)
+    if (settingKey === "PWD_DISCOUNT") {
+      if (value < 0 || value > 100) {
+        return res.status(StatusCodes.BAD_REQUEST).json({ 
+          message: "PWD discount must be between 0% and 100%" 
+        });
+      }
+    }
+
     // Get old value for logging
     const oldSetting = await AppSettings.findOne({ settingKey });
     const oldValue = oldSetting?.value || 'None';
@@ -144,6 +183,11 @@ export const updateSetting = async (req, res) => {
           logDescription = isReset 
             ? `Reset Distance Radius to default (${value} km)`
             : `Updated Distance Radius from ${oldValue} km to ${value} km`;
+        } else if (settingKey === "PWD_DISCOUNT") {
+          action = isReset ? 'RESET_PWD_DISCOUNT' : 'UPDATED_PWD_DISCOUNT';
+          logDescription = isReset 
+            ? `Reset PWD Discount to default (${value}%)`
+            : `Updated PWD Discount from ${oldValue}% to ${value}%`;
         } else {
           action = 'UPDATED_SETTING';
           logDescription = `Updated ${settingKey} from ${oldValue} to ${value}`;
